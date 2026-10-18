@@ -1,0 +1,1311 @@
+# 05 — The `ryoku` control CLI and the update/delivery contract
+
+Scope: the Go program `ryoku/cli/` (dispatcher `main.go`, `internal/updater`,
+`internal/doctor` with all 118 registered reconcilers, `internal/sys`,
+`internal/ryotunesrelease`, `internal/ryokumanifest`, `internal/keyring`,
+`internal/securitykey`, `internal/keyboard`, `internal/importer`, `track.go`,
+`recovery.go`, `wm.go`, `plugin*.go`), the delivery contract in
+`docs/updates.md` / `docs/cli.md` (and `docs/profile.md`, which has no CLI
+surface), `bin/ryoku-dev-verify-delivery`, the CLI's Go tests, and
+`release/packages/ryoku/PKGBUILD`. Source pinned at
+`98a0368253d9628be72b853985878a5db90e1547`. Every `path:line` below is relative
+to the Ryoku repo root. Debian versions come from `tools/pkgver` (trixie /
+trixie-backports / forky / sid / Ubuntu 26.04 resolute) and
+packages.debian.org file lists, queried 2026-10-17.
+
+The CLI is a dispatcher over pacman, yay, snapper, limine and git. Debian has
+no pacman, no yay, no AUR, no limine, no snap-pac, no limine-snapper-sync, and
+no grub-btrfs (all five checked against `sources.debian.org/api/search`, see
+§6). This document specifies the retool.
+
+## Summary
+
+| Component | Path | As-is on Debian | Complexity | Blocking issues |
+|---|---|---|---|---|
+| Dispatcher | `ryoku/cli/main.go` | YES | Low | none (pure dispatch) |
+| Low-level primitives | `ryoku/cli/internal/sys/` | NO | Medium | `PkgInstalled`/`InstalledVersion` are `pacman -Q` (`sys.go:47-68`); channel = `[ryoku]` stanza of `/etc/pacman.conf` (`release.go:37,100-186`) |
+| `ryoku update` (packaged lane) | `internal/updater/update.go`, `ryokuset.go`, `upgradelog.go` | NO | High | every step is pacman (`-Sy`, `-Slq`, `-Qq`, `-Qi`, `-Si`, `vercmp`, `-S --overwrite`, `-Qo`, `-Rdd`, `-Qu`); output scraper is pacman-specific |
+| `ryoku update` (checkout lane) | `internal/updater/channel.go` | PARTIAL | Low | git logic is neutral; it runs `ryoku/shell/deploy.sh` (another doc) |
+| `ryoku update --system` | `update.go:372-399` | NO | Medium | `pacman -Syu`, `yay -Sua` |
+| `ryoku status [--json]` | `update.go:1473-1763` | NO | Medium | `pacman -Sl`, `checkupdates`, `yay -Qua`; JSON is a contract read by `ryoku/shell/ipc/updates.go:71` |
+| `ryoku rollback` / `snapshots` | `update.go:1238-1470` | PARTIAL | High | snapper part works; restore path is Limine + `limine-snapper-restore`, which do not exist on Debian |
+| `ryoku track` / channels | `track.go`, `internal/updater/release.go`, `internal/sys/release.go` | NO | Medium | channel is a pacman `Server =` line; switching drops pacman sync dbs |
+| Boot guard | `internal/updater/bootguard.go`, `systemd/ryoku-boot-guard.service` | NO | Medium | revert = `pacman -Syy` + `pacman -S`; last resort edits `/boot/limine.conf` |
+| `materialize` / `reset` / user_edits | `internal/updater/materialize.go`, `reset.go`, `internal/sys/useredits.go`, `fsops.go` | YES | Low | none (pure file ops; one `systemctl --user try-restart wireplumber.service`) |
+| `ryoku doctor` (118 reconcilers) | `internal/doctor/` | PARTIAL | High | 47 reconcilers touch pacman/limine/mkinitcpio/AUR/Arch paths (28 Arch-only, 19 partly); see §3 |
+| `ryoku verify` | `internal/doctor/reconcile_manifest.go:205-262` | NO | Low | `pacman -Qq` / `-Qqe` (`manifest.go:300-318`) |
+| `ryoku debug` / `doctor --report` / `--explain` | `internal/doctor/report.go`, `explain.go` | PARTIAL | Low | report section runs `pacman -Q/-Qtdq/-Dk`, reads `/var/log/pacman.log`, `/etc/conf.d/snapper` |
+| `ryoku version` | `internal/updater/version.go` | PARTIAL | Low | parses `pacman -Q ryoku-desktop` via `sys.InstalledVersion` |
+| `ryoku deploy` / `recovery` | `update.go:1775-1785`, `recovery.go`, `bin/ryoku-recovery` | PARTIAL | Low | recovery script runs `pacman -Syu` (`bin/ryoku-recovery:132,209`), fetches from `ryoku-dev/ryoku-arch` |
+| Ryotunes external channel | `internal/ryotunesrelease/` | NO | Medium | installs a `.pkg.tar.zst` with `pacman -U`, verifies with `pacman -Qip`, compares with `vercmp` |
+| Other subcommands (`wm`, `plugin`, `keyring`, `security-key`, `keyboard`, `import`, `reload`) | see §1.15 | PARTIAL | Medium | see §1.15 |
+| Delivery gate | `bin/ryoku-dev-verify-delivery` | YES | Low | greps PKGBUILDs; must learn `debian/` packaging paths |
+| Packaging of the CLI | `release/packages/ryoku/PKGBUILD` | NO | Low | `depends=('pacman' 'pacman-contrib' 'snapper')`; needs a `debian/` dir |
+
+---
+
+## 1. Subcommands, step by step
+
+`main.go:40-97` dispatches; it first scrubs the Quickshell crash env
+(`main.go:41`, `crashenv.go:12`) and loads the catalog from
+`/usr/share/ryoku/i18n` (`main.go:42`). Two "worlds" (`docs/cli.md:8-24`): a
+**packaged** box (no checkout; `sys.ResolveRepo()` returns "") and a **checkout**
+box (`RYOKU_REPO`, or the path `deploy.sh` recorded in
+`~/.local/state/ryoku/repo`, or a `~/ryoku-arch` clone when a `RYOKU_CHANNEL` is
+tracked: `internal/sys/repo.go:28-51`).
+
+### 1.1 `ryoku update [--system|--full] [-v] [--channel-switch]` (`main.go:49`)
+
+**What it does** (`internal/updater/update.go:78-258`, stage 2 `594-791`):
+
+1. Flags: `--stage2 <pre>` (`update.go:79`), `-v/--verbose` raw output
+   (`83-85`), `--channel-switch` (`86-88`, set only by `track`/`rollback --to`
+   via `release.go:196`), `--system`/`--full` (`89-91`).
+2. Exclusive non-blocking `flock` on `$XDG_RUNTIME_DIR/ryoku-update.lock`
+   (`97-103`, `268-279`).
+3. Refuses below 1 GiB free on `/` (`111-114`, `284-291`).
+4. Caches sudo once on a TTY (`sudo -v`, `311-316`) and refreshes it every
+   minute (`sudo -n -v`, `324-342`).
+5. Picks the step list: checkout → `gitSteps`, `--system` → `systemSteps`,
+   else `pkgSteps` (`124-132`, lists at `29-61`); progress is published to
+   `$XDG_RUNTIME_DIR/ryoku-update.json` (`runstate.go:73-78`).
+6. Pre snapshot: `sudo snapper -c root create -t pre -c number -p -d
+   "ryoku-update (from <sha>)"` (`134-136`, `1789-1807`, description
+   `347-358`); skipped with a note when snapper or
+   `/etc/snapper/configs/root` is missing.
+7. **Checkout lane** (`140-160`): `channelUpdate` (`channel.go:112-140`:
+   bounded `git fetch origin <ch>` `224-230`; `syncChannel` fast-forwards a
+   clean tree, resets a diverged channel branch, leaves a dirty tree
+   `172-212`; runs `<repo>/ryoku/shell/deploy.sh` `136`), then
+   `rashinReindex` (`1035-1048`), `prowlRefresh` (`1055-1071`),
+   `upgradeRyotunes` (`ryotunes.go:26-44`), `offerSnapperHelpers`
+   (`1160-1189`), `runFreshDoctor` (`/usr/bin/ryoku doctor`, `1215-1221`),
+   post snapshot (`1809-1819`), `finishRun` (`582-587`).
+8. **Packaged lane** (`162-257`):
+   1. exports `RYOKU_UPDATE_FROM` from `/etc/ryoku-release` (`165-167`);
+   2. deletes `/var/lib/pacman/db.lck` when no `pacman` process runs
+      (`168`, `1104-1114`);
+   3. `sudo pacman -Sy --noconfirm` (`-Syy` on a channel switch) (`175`,
+      `ryokuset.go:213-219`);
+   4. builds the Ryoku set: `pacman -Slq ryoku` ∩ `pacman -Qq`, minus
+      `ryotunes`, repo-qualified `ryoku/<name>` (`178`, `ryokuset.go:54-106`);
+      on an ordinary update drops every name whose installed version is newer
+      than the repo's, via per-name `pacman -Qi <n>` and `pacman -Si
+      ryoku/<n>` and `vercmp` (`ryokuset.go:134-190`);
+   5. on a channel switch removes `ryoku-desktop-hyprland`/`-niri` with
+      `pacman -Rdd` when the target repo does not serve them (`184-191`,
+      `455-482`);
+   6. zero-set handling (`197-212`); otherwise runs, sleep-inhibited,
+      `sudo env SNAP_PAC_SKIP=y RYOKU_MANAGED_UPDATE=1 pacman -S --needed
+      --noconfirm --overwrite <ryokuOverwriteGlob> ryoku/<pkg>...`
+      (`214`, `364-366`, `ryokuset.go:233-237`, glob `update.go:512-518`),
+      scraping "exists in filesystem" paths (`upgradelog.go:92-163`);
+   7. on failure `healPackageUpgrade` deletes conflict paths no package owns
+      (`pacman -Qo`, `486-499`) or, when the error names the database, drops
+      the cached `[ryoku]` sync db (`421-448`, `sys/release.go:169-186`); it is
+      called twice in a row (`215`, `220`) before one retry (`221-231`);
+   8. system lane: `pacman -Qu` minus the set (`239`, `ryokuset.go:243-261`);
+      `--system` runs `runSystemLane` (`372-399`: `sudo env SNAP_PAC_SKIP=y
+      RYOKU_MANAGED_UPDATE=1 pacman -Syu --noconfirm --overwrite <glob>`
+      `524-527`; `yay -Sua --noconfirm` `538-540`; `flatpak update
+      --noninteractive --assumeyes` `547-561`), otherwise prints "take them with
+      `sudo pacman -Syu`" (`404-410`);
+   9. `syscall.Exec("/usr/bin/ryoku", "update --stage2 <pre> [--system]")`
+      (`248-257`) so the new binary runs stage 2.
+9. **Stage 2** (`594-791`): re-primes sudo; arms the boot guard
+   (`628`, `bootguard.go:70-91`); `ensurePackagePowerCutover` runs `sudo
+   /usr/bin/ryoku-power-cutover package` when `/var/lib/ryoku/power-cutover-hook-active`
+   is absent (`817-841`); reads login1 sessions over D-Bus (`636`,
+   `1993-2044`); takes the power-cutover flock (`643`, `793-808`); starts a
+   user-scope `systemd-run ... systemd-inhibit --what=sleep sleep infinity`
+   guard and verifies it via `org.freedesktop.login1.Manager.ListInhibitors`
+   (`653`, `871-923`); `sudo systemctl reload systemd-logind` (`662`,
+   `1025-1030`); stops `ryoku-clamshell`/`ryoku-idle` (`666`, `947-957`);
+   `ryoku-power-cutover generation-guard-start` (`674`); stops the shell
+   (`683`, `1887-1934`: `systemctl --user stop ryoku-shell`, `ryoku-shell
+   quit`, `pkill` of quickshell configs, livewall, hub); pauses compositor
+   auto-reload (`695`, `1823-1828`); **`Materialize()`** (`696`); re-renders
+   the provider config from `~/.config/ryoku/desktop.json` (`712`,
+   `1857-1864`); `session-bind`, reload, `startShell` (`1940-1966`),
+   `waitForShellReady` (`2046-2068`), `activatePowerPolicy` (`970-1013`),
+   `restartWallpaper` (`2076-2092`), `session-check`,
+   `generation-guard-stop`, guard release (`715-778`); rashin/prowl/ryotunes
+   (`779-781`); snapper helper offer + `ryoku doctor` (`784-785`); post
+   snapshot `sudo snapper -c root create -t post --pre-number <pre> -c number
+   -d ryoku-update` then `sudo snapper -c root cleanup number` (`788`,
+   `1809-1819`).
+
+**Arch couplings:** pacman everywhere in step 8 (cites above); `vercmp`
+(`ryokuset.go:180`); `/var/lib/pacman/db.lck` (`update.go:1105`); pacman
+output grammar (`upgradelog.go:36-39,147-163,514-552`); `SNAP_PAC_SKIP`
+(snap-pac's variable, `ryokuset.go:234`); `yay` (`update.go:378-386,538-540`);
+`snap-pac`/`limine`/`limine-snapper-sync` package probes and
+`ryoku-pkg-add`/`ryoku-pkg-aur-add` installs (`1127-1189`); user-facing
+strings naming pacman/Arch (`update.go:409,1259,1508`, `bootguard.go:179`;
+all are i18n keys present in every catalog under `ryoku/i18n/catalog/`).
+
+**As-is on Debian:** NO — step 8 fails at `pacman -Sy`; the checkout lane and
+stage 2 (minus helper offers) are distro-neutral.
+
+**Port steps:** see §7 (code plan). Command-level mapping:
+
+| Step | Arch argv (cite) | Debian argv |
+|---|---|---|
+| refresh | `sudo pacman -Sy[y] --noconfirm` (`ryokuset.go:213-219`) | `sudo apt-get update --error-on=any` (no force variant: list files are keyed by URI, so a channel move fetches new files; to refresh only the Ryoku source: `sudo apt-get update -o Dir::Etc::SourceList=/etc/apt/sources.list.d/ryoku.sources -o Dir::Etc::SourceParts=- -o APT::Get::List-Cleanup=0`) |
+| served set | `pacman -Slq ryoku` (`ryokuset.go:92`) | `apt-get indextargets --format '$(FILENAME)' 'Created-By: Packages' 'Origin: <ryoku Release Origin>'` → `/usr/lib/apt/apt-helper cat-file <file>` → parse deb822 `Package:`/`Version:`/`Architecture:` |
+| installed set | `pacman -Qq` (`ryokuset.go:96`) | `dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\t${Version}\n'`, keep rows whose first two chars are `ii` or `hi` |
+| hold-back compare | `pacman -Qi`, `pacman -Si ryoku/<n>`, `vercmp` (`ryokuset.go:138-189`) | installed version from the row above, served version from the index, `dpkg --compare-versions <inst> gt <served>` (exit 0 = true) |
+| install set | `sudo env SNAP_PAC_SKIP=y RYOKU_MANAGED_UPDATE=1 pacman -S --needed --noconfirm --overwrite <glob> ryoku/<p>...` (`ryokuset.go:233-237`) | `sudo env DEBIAN_FRONTEND=noninteractive RYOKU_MANAGED_UPDATE=1 apt-get install -y --allow-downgrades -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold <p>=<served version>...` (`--needed` is implicit; `<p>=<ver>` replaces the `ryoku/` qualifier; no `--overwrite`, see §8 I-6) |
+| drop split metas | `sudo pacman -Rdd --noconfirm <meta>` (`update.go:461`) | append `<meta>-` to the same `apt-get install` argv (apt removes it in the same transaction) |
+| system pending | `pacman -Qu` (`ryokuset.go:248`) | `LC_ALL=C apt-get -s -o Debug::NoLocking=1 full-upgrade`, parse `^Inst (\S+) \[(\S+)\] \((\S+) ` (upgrade) and `^Inst (\S+) \((\S+) ` (new package, e.g. a kernel ABI bump) |
+| system lane | `pacman -Syu --noconfirm --overwrite <glob>` (`update.go:524-527`) | `apt-get update` then `apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade` (`upgrade` keeps back a `linux-image-amd64` whose new ABI needs a new package) |
+| AUR lane | `yay -Sua --noconfirm` (`update.go:539`) | deleted (§5) |
+| stale lock | `rm /var/lib/pacman/db.lck` (`update.go:1104-1114`) | deleted; replace with `dpkg --audit` → `sudo dpkg --configure -a` (§8 I-8) |
+| strays | `pacman -Qo <path>` + `rm` (`update.go:486-499`) | deleted for files (dpkg overwrites unowned files); conffiles see §8 I-6 |
+| db rejection | substring match on pacman error (`update.go:437-448`) | apt-get update errors: `NO_PUBKEY`, `is not signed`, `Hash Sum mismatch`, `changed its 'Codename' value`; fix = `rm /var/lib/apt/lists/*<ryoku-host>*` + `apt-get update` |
+
+**Complexity:** High — the packaged lane is rewritten end to end; stage 2 is kept.
+
+**Issues / risks:** `update.go:215` and `:220` call `healPackageUpgrade` twice
+before the retry (strays deleted twice / sync db dropped twice); the duplicate
+`if err != nil` at `update.go:192-196` is unreachable; `channelSwitchArgs`
+(`update.go:532-535`) has no caller. `offerSnapperHelpers` installs snap-pac
+through `ryoku-pkg-add`, which runs `sudo pacman -Syu --needed`
+(`system/extras/ryoku-pkg-add:18`), i.e. a full sysupgrade (kernel included)
+inside the "Ryoku lane only" update that `ryokuset.go:12-32` forbids.
+
+### 1.2 `ryoku status [--json]` (`main.go:61`, `update.go:1473-1524`)
+
+**What it does:** prints config base, channel, release (`/etc/ryoku-release`
+vs the channel's `release.json`), installed/available, behind count, the
+system lane count ("`sudo pacman -Syu`", `1507-1511`) and the snapshot count
+in three states (`1515-1522`). `buildStatus` (`1572-1581`) = `baseStatus`
+(`1585-1599`: checkout → `channelStatus` `channel.go:72-107` with `git fetch`,
+`rev-list --count`, `log`; packaged → `sys.InstalledVersion()` +
+`latestAvailable("ryoku-desktop")` = `pacman -Sl ryoku` (`1675-1688`)
+overridden by `checkupdates` (`1593-1597`, `1701-1720`), then
+`packagedStatus` (`1605-1649`) with GitHub compare/commits lookups
+(`commits.go:63-135,191-260` against `ryoku-dev/ryoku-arch`,
+`commits.go:29-34`)) + `systemPackageUpdates` = `checkupdates` + `yay -Qua`
+(`1724-1745`) + `addRyotunesUpdate` (`ryotunes.go:50-60`). `--json` emits
+`statusReport` (`1530-1556`); the shell daemon polls it
+(`ryoku/shell/ipc/updates.go:71`), the Hub renders it
+(`ryoku/hub/quickshell/Singletons/Updates.qml:6-26`).
+
+**Arch couplings:** `pacman -Sl ryoku` (`1676`); `checkupdates` from
+pacman-contrib (`1703-1711`, a private-db sync, no root); `yay -Qua`
+(`1731-1736`); `shortCommit` expects `<core>.r<count>.g<sha>-<rel>`
+(`1655-1662`), produced by `bin/ryoku-release-version:30-43`.
+
+**As-is on Debian:** NO.
+
+**Port steps:**
+1. `latestAvailable` → served version of `ryoku-desktop` from the Ryoku
+   Packages index (same parser as §1.1) or `apt-cache madison ryoku-desktop`
+   (`ryoku-desktop | <ver> | <uri> ./ Packages`, filter by the Ryoku URI).
+2. `pendingUpdates` (checkupdates) → either (a) a private apt tree, no root:
+   `apt-get -o Dir::State::Lists=$XDG_CACHE_HOME/ryoku/apt/lists -o
+   Dir::Cache=$XDG_CACHE_HOME/ryoku/apt/cache -o Debug::NoLocking=1 update`
+   then `apt-get -o Dir::State::Lists=... -o Dir::Cache=... -s full-upgrade`
+   (the same technique `chdist` from devscripts uses), or (b) system lists
+   kept fresh by apt's own timer: ship `/etc/apt/apt.conf.d/10ryoku-periodic`
+   with `APT::Periodic::Update-Package-Lists "1";` (apt-daily.timer), then
+   parse `apt-get -s full-upgrade` unprivileged.
+3. `aurUpdates` → delete (§5).
+4. Keep the `statusReport` JSON keys byte-identical (`installedVersion`,
+   `latestVersion`, `available`, `pendingUpdates`, `updates`, `recent`,
+   `channel`, `snapshots`, `snapshotsKnown`, `packages`, `systemUpdates`,
+   `release*`): the shell daemon and Hub depend on them.
+5. Replace the "`sudo pacman -Syu`" strings (`update.go:1508`,
+   `ryoku/hub/quickshell/pages/UpdatesPage.qml:595`) with `sudo apt full-upgrade`.
+6. `ryokuRepoSlug` default (`commits.go:33`) → the port's GitHub repo, or set
+   `RYOKU_REPO_SLUG`; the packaged version string must keep the `.g<sha>`
+   token of that repo's commit for the compare to resolve.
+
+**Complexity:** Medium.
+
+### 1.3 `ryoku rollback [--to <tag> | <id>]` (`main.go:55`, `update.go:1238-1330`)
+
+**What it does:** `--to v<tag>` validates the tag (`sys.IsReleaseTag`,
+`internal/sys/release.go:47-53`) and calls `Track(tag)` (`1246-1252`) — the
+Ryoku set moves to the frozen release, Arch untouched. `<id>` prints the
+boot-menu restore guide (`restoreGuide` `1306-1330`: "reboot, open Limine
+Snapshots → id, run `sudo limine-snapper-restore`", and if
+`limine-snapper-sync` is missing tells the user to run `ryoku-pkg-aur-add
+limine-snapper-sync && sudo systemctl enable --now limine-snapper-sync.service`).
+No argument: `printReleases` (`1273-1302`, ledger
+`<RepoBase>/releases/index.json` via `release.go:59-107`) and `Snapshots()`.
+The rationale (`1231-1237`, `docs/cli.md:81-87`): the root is pinned
+`rootflags=subvol=@`, so `snapper rollback` (which flips the btrfs default
+subvolume) cannot restore it.
+
+**Arch couplings:** Limine snapshot menu; `limine-snapper-restore`;
+`ryoku-pkg-aur-add` (AUR); `pacman -Q limine-snapper-sync` (`1323`).
+
+**As-is on Debian:** PARTIAL — `--to` works once `Track` is ported; the
+snapshot restore guide names tools Debian lacks. Port steps: §6.
+
+### 1.4 `ryoku snapshots` (`main.go:59`, `update.go:1333-1348`)
+
+**What it does:** requires `snapper` and `/etc/snapper/configs/root`; reads
+`snapper -c root --csvout list --columns number,type,date,description,cleanup`
+unprivileged, then via `sudo -n` (`1360-1370`), requires the CSV header
+(`isSnapshotCSV` `1376-1383`, because snapper exits 0 with "No permissions.");
+falls back to `sudo snapper -c root list` (`1344`); prints rows, free space,
+and "listed in the Limine boot menu" iff `pacman -Q limine`,
+`pacman -Q limine-snapper-sync` and the unit is enabled (`1458-1462`).
+
+**As-is on Debian:** PARTIAL — snapper 0.10.6 (trixie, forky, sid, resolute)
+prints the same CSV; only `snapshotsInBootMenu` is Arch/Limine-specific.
+`docs/cli.md:91` says it runs `sudo snapper list`; the code tries unprivileged
+first.
+
+### 1.5 `ryoku track <stable|testing|unstable-dev|main|v<tag>> [--source]` (`main.go:73`, `track.go:27-110`)
+
+**What it does:** `--source` + `main|unstable-dev` runs `bin/ryoku-track` from
+the checkout or downloads it from
+`https://raw.githubusercontent.com/ryoku-dev/ryoku-arch/main/bin/ryoku-track`
+(`track.go:16,91-110`); that script runs `sudo pacman -S --needed --noconfirm
+git go cmake ninja qt6-shadertools wayland base-devel matugen`
+(`bin/ryoku-track:36`). Otherwise maps `unstable-dev→testing`, `main→stable`
+(`track.go:73-84`) and calls `updater.Track` (`release.go:126-174`): refuses
+an unknown channel, a box with neither `ryoku-desktop` nor a `[ryoku]` stanza,
+or a private mirror (`127-141`); short-circuits when already on the channel and
+its `release.json` names the installed release (`144-151`); else
+`switchToPackageChannel` (`180-191`: retire source tracking
+`sys/repo.go:92-148`, rewrite the `[ryoku]` `Server =` line with `sudo install`
+and drop `/var/lib/pacman/sync/ryoku.*`, `sys/release.go:130-186`), clears
+`RYOKU_CHANNEL` from the user manager (`systemctl --user unset-environment`,
+`dbus-update-activation-environment`, `release.go:202-206`), then
+`Update(--channel-switch)` (`release.go:196`).
+
+Channel ↔ server map (`sys/release.go:28,55-90`): stable =
+`https://repo.ryoku.dev/stable/$arch`, testing =
+`.../channels/testing/$arch`, `v<tag>` = `.../releases/<tag>/$arch`.
+
+**As-is on Debian:** NO. Port: §8 I-12 (channel handling on apt).
+
+### 1.6 `ryoku boot-guard [--disarm]` (`main.go:57`, `bootguard.go:94-126`)
+
+**What it does:** root-only (`95-97`), run by
+`ryoku/cli/systemd/ryoku-boot-guard.service` (`Before=display-manager.service`,
+`ConditionPathExists=/var/lib/ryoku/update-pending.json`). Reads the marker
+stage 2 wrote (`70-91`); a session's `/var/lib/ryoku/boot/ok-<uid>` from a later
+boot disarms (`128-142`); boot 2 → `revertRelease` (`157-181`: rewrite the
+channel to the previous tag, `nm-online -q --timeout=90`, `pacman -Syy
+--noconfirm`, `env SNAP_PAC_SKIP=y pacman -S --noconfirm --overwrite <glob>
+ryoku-desktop`, `runuser -u <user> -- env HOME=... ryoku materialize` for each
+`/home/*/.config/ryoku` `186-193`, notice JSON); boot 3 →
+`pointBootMenuAtSnapshot` (`199-224`) rewrites `default_entry:` in
+`/boot/limine.conf` to the `Snapshots/<title>/<kernel>` entry whose cmdline
+carries `subvol=/@snapshots/<id>/snapshot` (`229-250`).
+
+**As-is on Debian:** NO. **Port steps:**
+1. `revertRelease`: `apt-get update --error-on=any` (retry-next-boot semantics
+   at `165-171` need a non-zero exit on fetch failure, which apt only gives
+   with `--error-on=any`); then install the full served set at the target
+   versions (same argv as §1.1 install step) rather than only `ryoku-desktop`:
+   apt satisfies `ryoku-desktop`'s `=`-pinned depends by downgrading only when
+   each dependency's candidate is the target version.
+2. `pointBootMenuAtSnapshot`: Limine branch kept only if Limine is kept (boot
+   chain doc). GRUB branch: `grub-reboot '<grub-btrfs submenu>><entry>'` or
+   `GRUB_DEFAULT=saved` + `grub-set-default`; grub-btrfs titles its entries
+   from `/etc/default/grub-btrfs/config` (`GRUB_BTRFS_SUBMENUNAME`, default
+   "<distro> snapshots") — the entry path parser (`229-250`) is rewritten
+   against `/boot/grub/grub-btrfs.cfg`.
+3. `runuser` is `/usr/sbin/runuser` on Debian (root's PATH has it).
+4. Unit and tmpfiles ship via `dh_installsystemd`/`dh_installtmpfiles`;
+   Debian enables the unit at install (`deb-systemd-helper`), the doctor's
+   enable step (`reconcile_bootguard.go:54`) becomes a no-op.
+
+### 1.7 `ryoku materialize` / `ryoku reset [path] [-y]` (`main.go:51,53`)
+
+Distro-neutral; see §4.
+
+### 1.8 `ryoku reload` (`main.go:65-66`)
+
+Runs `ryoku-shell reload` (Ryoku-built binary). Neutral.
+
+### 1.9 `ryoku version [--branch] [--pretty]` (`main.go:63`, `version.go:17-66`)
+
+**What it does:** checkout → `VERSION` + `git rev-parse --short=7 HEAD`
+(`85-95`); packaged → `/etc/ryoku-release` `RELEASE=` (`60-63`) else parses
+`sys.InstalledVersion()` split at the first `-`, skipping `r<count>` and taking
+`g<sha>` (`96-115`); `--branch` prints `<channel> · <sha>`; `--pretty` prefixes
+the release name and art (`31-40`). Runs on every shell launch (fastfetch).
+
+**As-is on Debian:** PARTIAL — works once `InstalledVersion` reads dpkg. A
+Debian version with an epoch (`1:0.75.5...`) breaks the split at `version.go:98`
+(core would read `1:0`); ryoku packages must not carry an epoch, or the parser
+must strip `^\d+:`.
+
+### 1.10 `ryoku doctor [--check|-n] [--verbose] [--report [f]] [--explain] [--json]` (`main.go:77`, `internal/doctor/doctor.go:312-380`)
+
+Runs the 118 reconcilers in registry order (`doctor.go:102-223`), read-only for
+`--check/--report/--explain/--json` (`340-342`); writes
+`~/.local/state/ryoku/doctor-report.txt` on any warn/fail (`364-375`);
+`--explain` POSTs the report to an OpenAI-compatible endpoint (default
+`https://api.groq.com/openai/v1`, `explain.go:31,97-154`). Reconcilers: §3.
+
+### 1.11 `ryoku verify [--json]` (`main.go:79`, `reconcile_manifest.go:205-262`)
+
+Fetches `<channel>/manifest.json` (`manifest.go:34-58`), diffs it against
+`pacman -Qq` and `pacman -Qqe` (`manifest.go:300-318`) and the saved baseline
+(`~/.local/state/ryoku/manifest.json`), prints missing / user-removed / extra.
+**Debian:** `dpkg-query` installed set; "explicit" → `apt-mark showmanual`
+(see §8 I-15 for the semantic gap).
+
+### 1.12 `ryoku debug` / `doctor --report` (`report.go:25-170`)
+
+Gathers `uname`, `/etc/os-release`, `ryoku status`, `ls` of the state dir,
+whether `/etc/pacman.conf` has `[ryoku]` (`95`), `sudo -n btrfs filesystem
+usage /` and `device stats` (`98-99`), `/proc/swaps`, `/etc/conf.d/snapper`
+(`101`), `pacman -Q <diagnosticPackages + compositor packages>` (`104`, list
+`40-60`), `pacman -Qtdq`, `pacman -Dk` (`105-106`), `find /etc -name
+'*.pacnew'` (`107`), tail of `/var/log/pacman.log` (`108`), failed units,
+`journalctl -b -p err`, `ryoku-shell status`, `pgrep -af quickshell`, backlight
+sysfs, `lspci -k`, `/proc/cmdline`, GPU-hang journal grep, `coredumpctl`.
+**Debian rewrite:** `pacman.conf` probe → `test -f
+/etc/apt/sources.list.d/ryoku.sources`; `/etc/conf.d/snapper` →
+`/etc/default/snapper`; `pacman -Q <list>` → `dpkg-query -W -f='${Package}
+${Version}\n' <Debian names>` (`qt6-base`→`libqt6core6t64`,
+`qt6-declarative`→`libqt6qml6`, `qt6-wayland`→`qt6-wayland`,
+`nvidia-utils`→`nvidia-driver`, `limine`→`grub-efi-amd64` unless Limine is
+kept, others unchanged or Ryoku-built); `pacman -Qtdq` → `apt-get -s
+autoremove | awk '/^Remv/{print $2}'`; `pacman -Dk` → `dpkg --audit; apt-get
+check`; `*.pacnew` → `\( -name '*.dpkg-dist' -o -name '*.dpkg-old' -o -name
+'*.ucf-dist' -o -name '*.ucf-old' \)`; `pacman.log` → `/var/log/apt/history.log`
+and `/var/log/dpkg.log`. `ryokuIssuesURL` (`doctor.go:36`) points at
+`ryoku-dev/ryoku-arch`.
+
+### 1.13 `ryoku deploy` / `ryoku recovery` (`main.go:69,71`)
+
+`deploy` runs `$RYOKU_REPO/ryoku/shell/deploy.sh` (`update.go:1775-1785`).
+`recovery` runs `bin/ryoku-recovery` from the checkout or from
+`https://raw.githubusercontent.com/ryoku-dev/ryoku-arch/main/bin/ryoku-recovery`
+(`recovery.go:13,18-38`); the script checks `[ryoku]` in `/etc/pacman.conf`
+(`bin/ryoku-recovery:60,207`), runs `sudo pacman -Syu --needed --noconfirm
+<base.packages>` (`:128-133`), `pacman -Q ryoku-desktop` (`:191`), `sudo
+pacman -S --needed --noconfirm ryogami matugen` (`:209`). **Debian:** script
+rewrite with `apt-get` (`sudo apt-get install -y <Debian base list>`), probe
+`dpkg-query`, URLs to the port's repo.
+
+### 1.14 Ryotunes external channel (`internal/ryotunesrelease/`, called from `update.go:149,781`, `ryotunes.go:26-60`, doctor `reconcile_ryotunes.go`)
+
+**What it does:** GitHub release of `ryoku-dev/ryotunes` (`client.go:37`) via
+`https://api.github.com` (`client.go:97`); the asset must be exactly
+`ryotunes-<X.Y.Z>-<rel>-x86_64.pkg.tar.zst` + `.sha256` (`discover.go:54-118`);
+installed version `pacman -Q ryotunes` (`client.go:149-160`); downloaded file
+identity `pacman -Qip` (`client.go:164-194`) must be epoch `1`
+(`ryotunesrelease.go:42-52`), arch `x86_64` (`:40`); `vercmp` ordering
+(`client.go:290-299`); install = root `mktemp -d /var/tmp/ryotunes-release.X`,
+`install -m 0644`, `sha256sum` re-check, `pacman -U --noconfirm`
+(`client.go:214-242`). The `[ryoku]` repo also re-signs and serves the same
+`.pkg.tar.zst` (`release/repo/import-ryotunes.sh:1-30`,
+`release/repo/build-repo.sh:202-204`); the update set excludes `ryotunes`
+(`ryokuset.go:49`).
+
+**As-is on Debian:** NO — the upstream asset is an Arch package
+(`v1.2.1`: `ryotunes-1.2.1-1-x86_64.pkg.tar.zst`, plus a source tarball
+`ryotunes-1.2.1.tar.gz`, checked with `gh api`).
+
+**Port steps (two variants, human decision Q-4):**
+- (a) Keep a separate channel: the port builds `ryotunes_<ver>_amd64.deb` from
+  `ryotunes-<ver>.tar.gz` and publishes it with a `.sha256` on its own release
+  page; client changes: asset regex → `ryotunes_<X.Y.Z>-<rel>_amd64.deb`,
+  `wantArch` → `amd64`, identity via `dpkg-deb -f <file> Package Version
+  Architecture`, installed version via `dpkg-query -W -f='${Version}'`,
+  install via `apt-get install -y /var/tmp/ryotunes-release.X/<file>.deb`
+  (plain `dpkg -i` does not pull dependencies), ordering via
+  `dpkg --compare-versions`; epoch `1:` survives unchanged in Debian syntax.
+- (b) Drop the external channel: delete `externalReleasePkgs`
+  (`ryokuset.go:49`), the `upgradeRyotunes`/`addRyotunesUpdate` calls
+  (`update.go:149,781,1579`), `reconcileRyotunes`, and ship `ryotunes` in the
+  Ryoku apt repo like any other package.
+
+### 1.15 Other subcommands (`wm`, `plugin`, `keyring`, `security-key`, `keyboard`, `import`)
+
+Condensed from the survey in `findings/cli-other-subcommands.md`, which has the
+per-verb steps, every interface table and the test list. `ryoku/cli/vendor/ryoku-wm/`
+is byte-identical to `ryoku/wm/` (`replace ryoku-wm => ../wm`,
+`ryoku/cli/go.mod:18`), so the wm cites below use `ryoku/wm/`. That survey
+says ryotunesrelease has no CLI caller; it does: `updater/ryotunes.go:26-60`,
+called at `update.go:149,781,1579` (§1.14).
+
+| Subcommand | What it does (cites) | Arch couplings | As-is | Debian rewrite |
+|---|---|---|---|---|
+| `wm status\|caps\|state\|act\|session\|config\|reset-paths` (`wm.go:26-231`) | execs `ryoku-wm-<name>` (`ryoku/wm/client.go:45-61,405-421`), detected from `RYOKU_WM`, then the Hyprland/niri sockets, then `XDG_CURRENT_DESKTOP`, then `~/.config/{hypr,niri}` (`ryoku/wm/detect.go:213-245`) | none | YES | none |
+| `wm use <name> [--remove-previous]` (`wm.go:233-445`) | preview apply (`wm.go:263`); `pacman -Si ryoku-desktop-<n>` (`:288,522-525`); `sudo pacman -S --needed --noconfirm` (`:295`), on failure `sudo pacman -Rdd ryoku-desktop-<active>` and a retry (`:296-305`); `updater.Materialize()` + `doctor.Run` (`:317-347`); `--remove-previous` runs `wm.Reclaim` (`ryoku/wm/reclaim.go`: `pacman -Q`, `pacman -Rs --print --print-format %n --assume-installed ryoku-desktop-compositor,1`, parses "removing X breaks dependency", sums `pacman -Qi` Installed Size) and then `sudo pacman -Rns` (`wm.go:426-445`) | pacman throughout; the comment at `wm.go:271-274` relies on snap-pac | NO | availability: `apt-cache policy <pkg>`. Switch: one transaction `sudo apt-get install -y ryoku-desktop-<new> ryoku-desktop-<old>-`. Reclaim plan: `LC_ALL=C apt-get -s purge --autoremove <targets>`, parsing `Purg`/`Remv` lines (apt has no `--assume-installed`; simulate `install <new> <old>-` in one call). Size: `dpkg-query -W -f='${Installed-Size}'` (integer KiB, vs pacman's `N.NN MiB` text). Remove: `sudo apt-get purge --autoremove -y`. Virtual `ryoku-desktop-compositor` becomes `Provides:` on the variants. Caps `Packages` lists (`ryoku/wm/hyprland/caps.go:66-82`, `ryoku/wm/niri/caps.go:72-81`) need Debian names |
+| `track` | §1.5 | §1.5 | NO | §1.5, §8 I-12. `bin/ryoku-track:36` installs build deps with pacman. Debian: `git golang-go cmake ninja-build qt6-shader-baker libwayland-dev build-essential`; matugen is in no suite |
+| `recovery` | §1.13 | §1.13 | NO | §1.13. On a Debian box with no checkout it downloads and runs the Arch script, which clones the Arch tree, skips pacman (guarded at `bin/ryoku-recovery:128`) and runs `deploy.sh` |
+| `plugin new\|add\|remove\|list\|validate\|export\|share` (`plugin.go:61-604`, `plugin_new.go`, `plugin_share.go`, `plugin_audit.go`) | git clone/init/commit; `ryostore install\|remove plugins` (`plugin.go:300,327,499`); `ryoku-plugins-place` (`:305-313,331`, needs jq + flock); `xdg-user-dir DOCUMENTS`; `gh auth/api/repo fork/clone/pr create -R ryoku-dev/ryostore` (`plugin_share.go:548-647`), falling back to `xdg-open` on a form URL (`:729-755`); reserved ids read from `/usr/share/ryoku/config/quickshell/shell/modules/bar/barstyles/qsbar/core/widgets.json` (`plugin.go:98-109`) | none | YES | none. Packages: git, gh (forky lacks it; `plugin share` then falls back to the form), xdg-user-dirs, xdg-utils, jq, util-linux. Catalogue URLs point at `ryoku-dev/ryostore` |
+| `keyring status\|set\|init\|apply-pam` (`internal/keyring/*`) | mode in `~/.config/ryoku/keyring.json`; PAM file `/etc/pam.d/sddm` (`pam.go:25-30`); gnome-keyring over D-Bus (`dbus.go:15-117`); escalates with `pkexec env PKEXEC_UID=<uid> <self> keyring apply-pam` (`set.go:245-251`) | the insert anchor is `auth/session include system-login` (`pam.go:53-65,115-117`); detection requires the first field to be exactly `auth`/`session` (`pam.go:35-48`) | PARTIAL | Debian `/etc/pam.d/sddm` (sddm `debian/sddm.pam`) has `@include common-auth`, `-auth optional pam_gnome_keyring.so`, `@include common-session` and `-session optional pam_gnome_keyring.so auto_start`; forky/sid has no session keyring line. Anchors become `@include common-auth` / `@include common-session`. Detection must also accept `-auth`/`-session`. The file is a dpkg conffile. `libpam-gnome-keyring` also wires `common-password` through pam-auth-update. `pkexec` is a separate package |
+| `security-key status\|enroll\|remove\|set\|apply-pam` (`internal/securitykey/*`) | `pamu2fcfg` (`enroll.go:21-69`); probes `systemd-cryptenroll --fido2-device=list` and `fido2-token -L` (`status.go:74-97`); prepends `auth sufficient\|required pam_u2f.so ...` as line 1 of `/etc/pam.d/{sudo,polkit-1,sddm}` (`pam.go:14-110`) | hint text "install pam-u2f" (`enroll.go:22`); target `/etc/pam.d/polkit-1`, which neither Arch nor Debian ships (polkitd ships `/usr/lib/pam.d/polkit-1`) | PARTIAL | packages `libpam-u2f`, `pamu2fcfg`, `fido2-tools`, `systemd-cryptsetup`, `pkexec`. Copy `/usr/lib/pam.d/polkit-1` to `/etc/pam.d/polkit-1` before editing. Prepending at line 1 puts it above Debian sddm's `pam_nologin`; `sudo -i` uses `/etc/pam.d/sudo-i`, which is not a target |
+| `keyboard status\|detect\|apply` (`internal/keyboard/*`) | reads `/etc/X11/xorg.conf.d/00-keyboard.conf`, `/etc/vconsole.conf` `KEYMAP=`, `/etc/locale.conf` (`keyboard.go:144-192`); compares `/boot/EFI/Linux/*.efi` / `/boot/initramfs-*.img` mtimes (`:195-234`); `localectl set-x11-keymap` (`:254-263`); `sudo mkinitcpio -P` (`:268-276`); pkexec re-exec (`cmd.go:192-201`) | all of it | NO | Debian's systemd denies `org.freedesktop.locale1.Set*` for everyone, root included (`systemd-localed-read-only.conf` in trixie, `org.freedesktop.locale1.read-only.conf` in forky/sid and resolute), so `localectl set-x11-keymap` is refused. `/etc/vconsole.conf` is a tmpfiles symlink to `/etc/default/keyboard` (no `KEYMAP=`), and systemd is built `-Dvconsole=false`. Rewrite: write `XKBLAYOUT/XKBVARIANT/XKBOPTIONS` in `/etc/default/keyboard`, run `setupcon` (console-setup) or `dpkg-reconfigure -f noninteractive keyboard-configuration`, then `update-initramfs -u -k all` (initramfs-tools keeps the keymap only with `KEYMAP=y`) or `dracut --regenerate-all -f`. Glob `/boot/initrd.img-*` |
+| `import` (`internal/importer/importer.go`) | execs `ryoku-hub import scan\|apply\|undo` (`:27,186,199,212`); the engine runs `git clone`, `snapper -c root create`/`cleanup number`, and `luac -p` (`ryoku/hub/backend/import.go:170`, `import_apply.go:348-349,491-498`) | none in the CLI | YES | none (`luac` comes from `lua5.4` via update-alternatives) |
+| `reload` (`main.go:65-66`) | `ryoku-shell reload` over `$XDG_RUNTIME_DIR/ryoku-shell.sock`; the daemon restarts only Quickshell components (`ryoku/shell/ipc/daemon.go:1433-1488`), not the compositor, although the usage text says "reload Hyprland" (`main.go:13,102`) | none | YES | none; quickshell is in trixie-backports (0.3.0-1~bpo13+1), forky and sid (0.3.2-1), but not trixie main or resolute |
+
+Tests that change for these subcommands: `internal/keyring/{pam,init,set,status}_test.go` (seeded
+from an `archSDDM` fixture, `pam_test.go:10-24`); `internal/securitykey/securitykey_test.go:165-167,213,284-292`;
+`internal/keyboard/keyboard_test.go:136-226`; `ryoku/wm/reclaim_test.go:14-17,251-259`. Full list:
+`findings/cli-other-subcommands.md` §3.
+
+### 1.16 Packaging of the CLI (`release/packages/ryoku/PKGBUILD`)
+
+**What it does:** `CGO_ENABLED=0 go build -trimpath -mod=vendor` from
+`ryoku/cli` (`PKGBUILD:24-27`), installs `/usr/bin/ryoku`,
+`/usr/lib/systemd/system/ryoku-boot-guard.service`,
+`/usr/lib/tmpfiles.d/ryoku.conf` (`:29-38`). `depends=('pacman'
+'pacman-contrib' 'snapper')` (`:16`), `optdepends=('yay' 'lua')` (`:17-18`),
+`makedepends=('go')` (`:19`), version `${RYOKU_PKGVER}` (`:10`).
+`go.mod:3` requires Go 1.23; all modules are vendored
+(`ryoku/cli/vendor/modules.txt`: godbus/dbus v5.2.2, x/sys v0.27.0, ryoku-i18n,
+ryoku-wm), so no Debian `golang-*-dev` packages are needed.
+
+**Dependencies:**
+
+| Arch pkg | Used for (cite) | Debian/Ubuntu pkg | trixie | trixie-bpo | forky | sid | resolute | Min version (why) |
+|---|---|---|---|---|---|---|---|---|
+| go (make) | build (`PKGBUILD:19,26`) | golang-go | 2:1.24~2 | 2:1.27~1~bpo13+1 | 2:1.27~1 | 2:1.27~1 | 2:1.26~1 | ≥1.23 (`ryoku/cli/go.mod:3`) |
+| pacman | every package op | apt, dpkg | 3.0.3 / 1.22.22 | - | 3.3.3 / 1.23.11 | 3.3.3 / 1.23.11 | 3.2.0 / 1.23.7ubuntu1 | apt ≥2.1.16 for `apt-get update --error-on=any` |
+| pacman-contrib | `checkupdates` (`update.go:1703`), `pacdiff` hint (`doctor.go:3781`) | none (apt does both) | - | - | - | - | - | - |
+| snapper | snapshots (`update.go:1789-1819`) | snapper | 0.10.6-1.2 | - | 0.10.6-1.3+b1 | 0.10.6-1.3+b1 | 0.10.6-1.3 | `--csvout` + `--columns` (≥0.8.x; all suites qualify) |
+| yay (opt) | AUR lane (`update.go:378,539,1731`) | none | - | - | - | - | - | deleted (§5) |
+| lua (opt) | luac pre-check (`PKGBUILD:18`) | lua5.4 | 5.4.7-1+b2 | - | 5.4.9-1 | 5.4.9-1 | 5.4.8-1build1 | binary is `luac5.4` (alternative `luac`) |
+| sudo | escalation everywhere | sudo | 1.9.16p2-3+deb13u2 | - | 1.9.17p2-9 | 1.9.17p2-9 | 1.9.17p2-1ubuntu3.2 | - |
+| btrfs-progs | `btrfs subvolume create`, `filesystem mkswapfile`, `device stats` (`doctor.go:698,3845-3856,3632`) | btrfs-progs | 6.14-1 | 7.1-1~bpo13+1 | 7.1-1 | 7.1-1 | 6.17.1-1build1 | ≥6.1 for `mkswapfile` |
+| git | checkout lane (`channel.go`), `reconcile_channel.go` | git | 1:2.47.3-0+deb13u1 | - | 1:2.53.0-1 | 1:2.55.0-1 | 1:2.53.0-1ubuntu1 | - |
+| curl | track/recovery script fetch (`track.go:106`, `recovery.go:144`) | curl | 8.14.1-2+deb13u5 | 8.21.0-2~bpo13+1 | 8.22.0-1 | 8.23.0-1 | 8.18.0-1ubuntu2.8 | - |
+| flatpak | system lane (`update.go:547-561`) | flatpak | 1.16.6-1~deb13u2 | - | 1.18.4-1 | 1.18.4-1 | 1.16.6-1 | - |
+| systemd | `systemd-inhibit`, `systemd-run --user`, logind D-Bus (`update.go:571,871-923`) | systemd | 257.13-1~deb13u1 | - | 262-1 | 262.1-1 | 259.9-0ubuntu0.1 | - |
+| networkmanager | `nm-online` (`bootguard.go:162`) | network-manager | 1.52.1-1 | - | 1.58.1-1 | 1.58.1-1 | 1.54.3-2ubuntu3.1 | - |
+| util-linux | `runuser` (`bootguard.go:191`, `/usr/sbin` on Debian), `setsid` (`update.go:1955`), `findmnt` | util-linux | 2.41.5-0+deb13u1 | - | 2.42.4-1 | 2.42.4-1 | 2.41.3-3ubuntu2.3 | - |
+| procps-ng | `pgrep`/`pkill` (`update.go:1109,1913-1931`) | procps | 2:4.0.4-9 | - | 2:4.0.7-1 | 2:4.0.7-1 | 2:4.0.4-9ubuntu1 | - |
+| dbus | `dbus-update-activation-environment` (`release.go:204`) | dbus-bin | 1.16.2-2 | - | 1.16.2-8 | 1.16.2-8 | 1.16.2-2ubuntu4 | - |
+| device-mapper | `dmsetup ls --target crypt` (`doctor.go:942`) | dmsetup | 2:1.02.205-2 | - | 2:1.02.205-2+b2 | 2:1.02.205-2+b2 | 2:1.02.205-2ubuntu3 | `/usr/sbin/dmsetup` is off a Debian user's PATH (§8 I-20) |
+| cryptsetup | `sudo cryptsetup close` (`doctor.go:911`, `/usr/sbin/cryptsetup` on Debian) | cryptsetup-bin | 2:2.7.5-2 | - | 2:2.8.8-1 | 2:2.8.8-1 | 2:2.8.4-1ubuntu4 | - |
+| plocate | `/etc/updatedb.conf` (`reconcile_snapshots.go:239-260`) | plocate | 1.1.23-1 | - | 1.1.25-1 | 1.1.25-1 | 1.1.23-1ubuntu3 | - |
+
+**Port steps (packaging):** add `debian/` for source `ryoku`: `Build-Depends:
+debhelper-compat (= 13), golang-go (>= 2:1.23~)`; `override_dh_auto_build:
+cd ryoku/cli && CGO_ENABLED=0 go build -trimpath -mod=vendor -o
+$(CURDIR)/debian/tmp/ryoku .`; `debian/ryoku.install` → `usr/bin/ryoku`;
+`debian/ryoku.ryoku-boot-guard.service` and `debian/ryoku.tmpfiles` (copies of
+`ryoku/cli/systemd/*`); `Depends: apt (>= 2.1.16), dpkg, snapper, sudo,
+systemd, network-manager, procps, util-linux, dbus-bin, btrfs-progs, git,
+curl`; `Recommends: flatpak, lua5.4`. Note `dh_golang`'s `GOPATH` build is not
+needed with `-mod=vendor`; set `GOFLAGS=-mod=vendor` and `GOCACHE=$(CURDIR)/.cache`
+so the build runs offline in sbuild.
+
+---
+
+## 2. Every external command and system interface (CLI core)
+
+Reconciler-specific interfaces are in §3's per-reconciler rows; this table is
+the update/status/track/rollback/boot-guard/manifest core plus the shared
+`sys` primitives. "Parser" = what the Go code must handle differently.
+
+| # | Interface | Ryoku cite | Purpose | Debian equivalent (exact) | Output / semantic differences the parser must handle |
+|---|---|---|---|---|---|
+| 1 | `pacman -Q <n>` exit status | `internal/sys/sys.go:47-49` (`PkgInstalled`, ~60 call sites); `ryotunesrelease/client.go:150` | is a package installed | `dpkg-query -W -f='${db:Status-Abbrev}' <n>`; installed iff the first two chars are `ii` or `hi` | `dpkg-query -W` exits 0 for `rc` (removed, config left) and `un` rows; exits 1 for names dpkg never saw; a Multi-Arch package installed for two archs prints two rows unless queried as `<n>:amd64`; virtual names (`polkit-1-auth-agent`) never match |
+| 2 | `pacman -Q ryoku-desktop` → `name version` | `sys.go:58-68` (`InstalledVersion`) | running Ryoku version | `dpkg-query -W -f='${Version}' ryoku-desktop` after the status check in #1 | one field, not two; `rc` rows still print a version |
+| 3 | `pacman -Qq` | `updater/ryokuset.go:96`; `updater/manifest.go:301`; `doctor/reconcile_multilib.go:66` | installed set | `dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\t${Version}\n'`, keep `ii`/`hi` | foreign-arch copies repeat `${Package}` (use `${binary:Package}` to get `name:i386`) |
+| 4 | `pacman -Qqe` | `manifest.go:302` | explicitly installed | `apt-mark showmanual` | debootstrap/d-i/tasksel mark the whole base as manual, so `Verify.Extra` (`manifest.go:288-292`) lists hundreds of base packages on a fresh install (§8 I-15) |
+| 5 | `pacman -Qdq <n>` | `doctor/reconcile_shipped_apps.go:71-73` | installed as dependency | `apt-mark showauto <n>` (prints the name iff auto) | exit 0 either way; test stdout |
+| 6 | `pacman -D --asexplicit --quiet <n>...` | `reconcile_shipped_apps.go:82-87` | mark explicit | `sudo apt-mark manual <n>...` | — |
+| 7 | `pacman -Qo <path>` / `-Qoq` | `updater/update.go:494,1076`; `doctor/doctor.go:1158,3949` | file owner | `dpkg-query -S <path>` → `pkg[, pkg2]: <path>` | exit 1 when unowned; lines `diversion by <pkg> from: <path>` must be skipped; owner list is comma-separated; paths are matched as packaged (a file shipped as `/bin/x` is not found as `/usr/bin/x` on merged-/usr) |
+| 8 | `pacman -Sl ryoku` (`repo pkg ver`) | `update.go:1675-1688` | repo version of `ryoku-desktop` | `apt-cache madison ryoku-desktop` → `ryoku-desktop \| <ver> \| <uri> <suite> Packages`, filter rows by the Ryoku URI; or the index parse of #9 | pipe-separated columns with padding; one row per source/version |
+| 9 | `pacman -Slq ryoku` | `ryokuset.go:92,113` | names the repo serves | `apt-get indextargets --format '$(FILENAME)' 'Created-By: Packages' 'Origin: <Ryoku Origin>'` → `/usr/lib/apt/apt-helper cat-file <file>` → deb822 stanzas | deb822 (blank-line separated, `Key: value`, continuation lines start with a space); the same package can appear for `amd64` and `all` |
+| 10 | `pacman -Qi <n>` / `pacman -Si ryoku/<n>` `Version :` | `ryokuset.go:138-176` | installed vs served version | dpkg row (#3) vs index stanza (#9) | pacman pads `Version         :`; dpkg/deb822 is `Version: x` |
+| 11 | `vercmp a b` → `-1/0/1` | `ryokuset.go:180-190`; `ryotunesrelease/client.go:290-299` | version ordering | `dpkg --compare-versions a gt b` (exit 0 true, 1 false); or a pure-Go port of deb-version(7) | different algorithm: pacman sorts a letter run below digits and below end-of-string (`1.0rc1 < 1.0`), dpkg sorts letters above end-of-string (`1.0rc1 > 1.0`) and uses `~` for pre-releases (`1.0~rc1 < 1.0`). Ryoku's `<core>.r<count>.g<sha>` (`bin/ryoku-release-version:30-43`) orders identically under both |
+| 12 | `pacman -Sy` / `-Syy --noconfirm` | `ryokuset.go:213-219`; `update.go:175`; `doctor.go:1085`; `reconcile_multilib.go:56`; `bootguard.go:165` | refresh | `apt-get update --error-on=any` | apt-get update exits 0 on failed fetches (only `W:`) unless `--error-on=any`; no `-yy`: list files are named after the URI |
+| 13 | `pacman -S --needed --noconfirm --overwrite <glob> ryoku/<p>...` | `ryokuset.go:233-237` | move the Ryoku set (up or down) | `apt-get install -y --allow-downgrades -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold <p>=<ver>...` under `DEBIAN_FRONTEND=noninteractive` | apt prints `<p> is already the newest version (<v>)` for no-ops; a held package aborts `-y` ("Held packages were changed") unless `--allow-change-held-packages` |
+| 14 | `pacman -S ryoku-desktop` | `bootguard.go:172-173`; `update.go:532-535` (no caller) | revert to a release | full set as in #13 | see §1.6 |
+| 15 | `pacman -Rdd --noconfirm <meta>` | `update.go:460-462` | drop split metas before a downgrade | `<meta>-` suffix in the #13 argv | one transaction instead of two |
+| 16 | `pacman -Syu --noconfirm --overwrite <glob>` | `update.go:524-527` | system lane | `apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade` | — |
+| 17 | `pacman -Qu` | `ryokuset.go:248` | system pending after the refresh | `LC_ALL=C apt-get -s -o Debug::NoLocking=1 full-upgrade` | parse `Inst <p> [<old>] (<new> <suite> [<arch>])`; new packages have no `[<old>]`; `Remv` lines = removals; `apt list --upgradable` (`<p>/<suite> <new> <arch> [upgradable from: <old>]`) warns "apt does not have a stable CLI interface" |
+| 18 | `checkupdates` | `update.go:1701-1720` | pending, no root, private db sync | private apt tree (§1.2 step 2a) or periodic system refresh (2b) | output `name old -> new` vs `Inst` lines |
+| 19 | `yay -Qua` | `update.go:1728-1745` | AUR pending | none (deleted, §5) | — |
+| 20 | `yay -Sua --noconfirm` | `update.go:537-540` | AUR upgrade | none (deleted, §5) | — |
+| 21 | `yay -S --needed --noconfirm --answerupgrade all` | `doctor/reconcile_manifest.go:56-64` | manifest AUR lane | merged into #13 / `apt-get install` | — |
+| 22 | `ryoku-pkg-add <p>` / `ryoku-pkg-aur-add <p>` | `update.go:1181-1185`; `update.go:1327` (hint); scripts `system/extras/ryoku-pkg-add:18`, `ryoku-pkg-aur-add:45-65` | install snapshot helpers | `sudo apt-get install -y <p>` | `ryoku-pkg-add` is `pacman -Syu --needed` (full sysupgrade) |
+| 23 | `/var/lib/pacman/db.lck` + `pgrep -x pacman` + `rm` | `update.go:1104-1114`; `doctor.go:826-840` | stale lock | none: `/var/lib/dpkg/lock-frontend`, `/var/lib/dpkg/lock`, `/var/lib/apt/lists/lock`, `/var/cache/apt/archives/lock` are `fcntl` locks the kernel drops on exit; the files always exist and must not be deleted. Debian's crash residue: `dpkg --audit` non-empty / files in `/var/lib/dpkg/updates/` → `sudo dpkg --configure -a`; broken deps → `apt-get check` → `sudo apt-get -f install` | — |
+| 24 | `/etc/pacman.conf` `[ryoku]` `Server =` read/write | `sys/release.go:37,100-162`; `doctor.go:999-1045`; `report.go:95`; `doctor.go:3706-3731` | channel = Server line | `/etc/apt/sources.list.d/ryoku.sources` (deb822: `Types: deb`, `URIs:`, `Suites:`, `Components:` (omitted for a flat repo), `Signed-By:`) | deb822 keys are case-insensitive, values may be multi-valued and folded; `Enabled: no` disables; one-line `.list` format is a second syntax the port does not need to read |
+| 25 | `/var/lib/pacman/sync/ryoku.{db,db.sig,files,files.sig}` drop | `sys/release.go:169-190`; `doctor.go:1070-1093` | unwedge a db/sig mismatch | `rm /var/lib/apt/lists/<uri-mangled>*` + `apt-get update` | InRelease is one inline-signed file, so a db/sig pair cannot desync; the analogous failure is `Hash Sum mismatch` during a publish (avoided server-side with `Acquire-By-Hash: yes`) |
+| 26 | `pacman-key --populate ryoku` + package `ryoku-keyring` | `doctor.go:1008-1012,1044` | trust the repo key | keyring file (e.g. `/usr/share/keyrings/ryoku-archive-keyring.pgp`) named by `Signed-By:`, shipped by a `ryoku-archive-keyring` .deb; no populate step | apt ≥3.0 (trixie) verifies with `sqv`; SHA-1 and DSA are rejected |
+| 27 | pacman transaction text (`Packages (N)`, `(x/y) upgrading`, `:: `, `error:`, `warning:`, `is up to date`, `Net Upgrade Size:`, `exists in filesystem`, `.pacnew`) | `updater/upgradelog.go:36-39,147-163,388,514-588` | curated progress, conflict scrape | apt/dpkg text (`The following packages will be upgraded:`, `N upgraded, N newly installed, N to remove and N not upgraded.`, `Need to get`, `After this operation`, `Get:N`, `Unpacking <p> (<new>) over (<old>)`, `Setting up <p> (<v>)`, `Processing triggers for`, `E:`/`W:`/`N:`, `trying to overwrite '<path>', which is also in package <p>`) or machine lines via `-o APT::Status-Fd=3` (`pmstatus:<pkg>:<pct>:<text>`, `dlstatus:...`, `pmerror:...`, `pmconffile:...`) | apt/dpkg messages are translated: run with `LC_ALL=C` |
+| 28 | `SNAP_PAC_SKIP=y` | `ryokuset.go:234`; `update.go:525,533`; `bootguard.go:172` | suppress snap-pac's own pair | Debian's `/etc/apt/apt.conf.d/80snapper` (in package `snapper`) honours `DISABLE_APT_SNAPSHOT=yes`, but sources `/etc/default/snapper`, which sets `DISABLE_APT_SNAPSHOT="no"` (§6) | an env var is overwritten by the sourced file |
+| 29 | `RYOKU_MANAGED_UPDATE=1` env | `ryokuset.go:234`; consumer `release/packages/ryoku-desktop/ryoku-desktop.install:125` | suppress the deferred cutover job | same env through `sudo env ... apt-get` → dpkg → maintainer scripts (dpkg keeps the caller's environment) | — |
+| 30 | `snapper -c root create -t pre/post`, `cleanup number`, `--csvout list --columns ...`, `set-config`, `modify -c number`, `delete` | `update.go:1344,1360-1370,1800-1818`; `doctor.go:653`; `reconcile_snapshots.go:90,123-205` | snapshots | identical commands, snapper 0.10.6 | same upstream, same output; config registry file differs (#31) |
+| 31 | `/etc/conf.d/snapper` `SNAPPER_CONFIGS=` | `doctor.go:487-492,597,722`; `report.go:101` | register the root config | `/etc/default/snapper` (Debian builds snapper `--with-conf=/etc/default`, `debian/rules`) | file also carries `DISABLE_APT_SNAPSHOT=`; `snapper-cleanup.service` runs `/usr/lib/snapper/systemd-helper --cleanup`, which iterates `SNAPPER_CONFIGS` from this file |
+| 32 | package `snap-pac` probe | `update.go:1131,1145-1147`; `doctor.go:561,589` | auto snapshot per transaction | built into `snapper` (`/etc/apt/apt.conf.d/80snapper`) | probe for the conffile, not a package |
+| 33 | `limine`, `limine-snapper-sync` packages + `limine-snapper-sync.service` | `update.go:1132-1133,1148-1150,1323,1459-1461`; `doctor.go:567-570,588-590,732-733` | snapshots in boot menu | none in any Debian/Ubuntu suite (§6) | — |
+| 34 | `limine-snapper-restore` | `update.go:1320` | restore a booted snapshot | none (§6) | — |
+| 35 | `/boot/limine.conf` `default_entry:` rewrite | `bootguard.go:37,199-250` | boot the pre-update snapshot | GRUB: `grub-reboot`/`grub-set-default` on grub-btrfs entries (§6) | entry naming differs |
+| 36 | `systemctl` / `systemctl --user` (`is-enabled`, `is-active`, `enable --now`, `reload systemd-logind`, `daemon-reload`, `restart`, `try-restart`, `reset-failed`, `unset-environment`, `cat`) | `sys.go:53-55`; `update.go:642,825,882-930,948,971-1007,1026,1894,1944-1948,2080-2086`; `release.go:203`; `materialize.go:322` | units | identical (systemd 257 trixie) | Debian auto-enables units shipped with `[Install]` at package install (deb-systemd-helper); Arch never does |
+| 37 | `systemd-inhibit`, `systemd-run --user`, `/usr/bin/systemd-inhibit`, `/usr/bin/sleep` | `update.go:571,869-923`; `upgradelog.go:79-87` | sleep guard | identical paths | — |
+| 38 | login1 D-Bus `ListSessions`, `Properties.GetAll`, `ListInhibitors` | `update.go:877-923,1993-2044` | session/guard state | identical | — |
+| 39 | `sudo -v`, `sudo -n -v`, `sudo env`, `sudo install -D -m M -o root -g root` | `update.go:315,337`; `sys/release.go:213`; `doctor.go:776-791` | escalation | identical (sudo 1.9.16) | Debian's admin group is `sudo` (installer concern); `secure_path` includes `/usr/sbin` |
+| 40 | `runuser -u <u> -- env ... ryoku materialize` | `bootguard.go:186-193` | re-lay configs as each user | `/usr/sbin/runuser` (util-linux) | root PATH only |
+| 41 | `nm-online -q --timeout=90` | `bootguard.go:162-164` | wait for network | `/usr/bin/nm-online` (network-manager) | — |
+| 42 | `pgrep -f "ryoku update"`, `pkill -f "qs -c <c>($\| )"`, `pkill -x` | `doctor.go:851-853`; `update.go:1913-1931,2091` | process control | procps | — |
+| 43 | `git` (`fetch`, `rev-parse`, `merge-base --is-ancestor`, `merge --ff-only`, `reset --hard`, `log`, `rev-list --count`, `status --porcelain`, `symbolic-ref`, `remote get-url`, `checkout`) | `updater/channel.go:58-267`; `sys/repo.go:33-46`; `doctor/reconcile_channel.go:31-118`; `version.go:90` | checkout lane | git | `~/ryoku-arch` and the `ryoku-arch` origin-URL test (`sys/repo.go:44-46`, `reconcile_channel.go:78,117`) are names of the upstream repo |
+| 44 | `curl -fsSL https://raw.githubusercontent.com/ryoku-dev/ryoku-arch/main/bin/{ryoku-track,ryoku-recovery}` | `track.go:16,106`; `recovery.go:13,144` | fetch scripts | curl; URL → the port's repo | — |
+| 45 | HTTPS `<RepoBase>/<channel dir>/release.json`, `/releases/index.json`, `/manifest.json` | `sys/release.go:28`; `updater/release.go:50-107`; `manifest.go:34-58` | channel metadata | unchanged code; the port's repo must publish these three files next to its apt index; `RepoBase` const must point at it | `manifest.go:39` uses `sys.ChannelURL` with the const, ignoring `RYOKU_RELEASE_BASE` (only `release.go:50-55` honours it) |
+| 46 | GitHub REST `GET /repos/<slug>/compare/<a>...<b>`, `/commits?sha=` | `updater/commits.go:29-41,119-135,245-260` | incoming commit list | unchanged; slug `ryoku-dev/ryoku-arch` (`commits.go:33`) → the port's repo | needs the `.g<sha>` token in the package version |
+| 47 | GitHub releases API `ryoku-dev/ryotunes`; asset `ryotunes-<v>-<r>-x86_64.pkg.tar.zst` | `ryotunesrelease/client.go:37,78,97`; `discover.go:54-118` | external Ryotunes channel | §1.14 | — |
+| 48 | `pacman -Qip <file>` | `ryotunesrelease/client.go:164-194` | verify package identity | `dpkg-deb -f <file> Package Version Architecture` | `Architecture: amd64` (not `x86_64`); deb822 fields |
+| 49 | `mktemp -d /var/tmp/...`, `install -m 0644`, `sha256sum`, `pacman -U --noconfirm` | `ryotunesrelease/client.go:214-242` | root-staged install | same staging, then `apt-get install -y /var/tmp/.../<file>.deb` | `dpkg -i` would not resolve dependencies |
+| 50 | `flatpak remotes --columns=name`, `flatpak update --noninteractive --assumeyes` | `update.go:547-561` | flatpak lane | identical (flatpak 1.16.6 trixie) | — |
+| 51 | `/etc/ryoku-release` (`RELEASE/NAME/CHANNEL/VERSION/COMMIT/DATE`) | `sys/release.go:41,269-308`; written by `release/packages/ryoku-desktop/PKGBUILD:259-266` | which release the box runs | same keys; on Debian a file under `/etc` in a .deb becomes a conffile (§8 I-14) | — |
+| 52 | `/var/lib/ryoku/{update-pending.json,boot/ok-*,boot/notice.json,power-cutover-hook-active,greeter-primary}` | `bootguard.go:33-38`; `update.go:811`; `ryoku/cli/systemd/ryoku.tmpfiles.conf` | boot guard state | unchanged | — |
+| 53 | `$XDG_RUNTIME_DIR/{ryoku-update.json,ryoku-update-answer,ryoku-update.lock,ryoku-power-cutover.lock}` | `runstate.go:73-78,222-227`; `update.go:269,798` | run state, prompt back-channel, locks | unchanged | — |
+| 54 | `~/.local/state/ryoku/{repo,deployed,materialized,manifest.json,provisioned,release-cache/,update-log.txt,doctor-report.txt,migrations/}` | `sys/repo.go:14`; `channel.go:48-50`; `update.go:2094-2096`; `manifest.go:27-29`; `doctor/provision.go:14-16`; `release.go:60`; `upgradelog.go:180-181`; `report.go:18-23` | CLI state | unchanged | — |
+| 55 | `~/.config/environment.d/ryoku.conf` `RYOKU_CHANNEL=` | `sys/repo.go:58-70,109-128` | tracked source channel | unchanged | — |
+| 56 | `dbus-update-activation-environment RYOKU_CHANNEL=` | `release.go:204` | clear session env | `/usr/bin/dbus-update-activation-environment` (dbus-bin) | — |
+| 57 | `syscall.Exec("/usr/bin/ryoku", ...)` and `pkgBin("/usr/bin/<name>")` | `update.go:248-257,1874-1879` | run the freshly installed binaries | unchanged if the .debs install to `/usr/bin` | — |
+| 58 | Ryoku-built binaries (`ryoku-shell`, `ryogami`, `ryoku-rashin`, `prowl`/`prowl-agent`, `ryoku-power-cutover`, `ryoku-clamshell`, `ryoku-idle`, `ryoku-qylock-activate`, `ryoku-livewall`) | `update.go:674-768,947-1048,1055-1071,1887-2092` | stage 2 | built into the port's .debs (other docs) | `prowlRefresh` "pacman-owned" test (`update.go:1062,1075-1077`) → `dpkg-query -S` |
+| 59 | `systemctl --user try-restart wireplumber.service` | `materialize.go:320-323` | apply a changed WirePlumber policy | identical unit name (Debian wireplumber ships `/usr/lib/systemd/user/wireplumber.service`) | — |
+| 60 | `/etc/os-release` | `report.go:90` | report | `ID=debian` / `ID=ubuntu` | — |
+| 61 | `sys.Has("pacman")` as the "is a pacman box" gate (`hasPacman`) | `doctor/reconcile_shipped_apps.go:88`, used at `:92`, `reconcile_manifest.go:68`, `reconcile_multilib.go:27` | gate | `dpkg-query -W -f='${db:Status-Abbrev}' dpkg` | Debian package `pacman-package-manager` (7.0.0 trixie) installs `/usr/bin/pacman`; with it present these reconcilers would run pacman against an empty Arch db |
+| 62 | `ryoku-boot-guard.service` + `/usr/lib/tmpfiles.d/ryoku.conf` | `release/packages/ryoku/PKGBUILD:34-37`; enabled by `reconcile_bootguard.go:54-57` | boot guard unit | `dh_installsystemd` + `dh_installtmpfiles` | Debian enables and runs tmpfiles at install |
+| 63 | libalpm hooks `94-ryoku-power-cutover-prepare.hook` (PreTransaction, AbortOnFail) and `95-ryoku-power-cutover.hook` (PostTransaction), `Target = usr/bin/ryoku-clamshell` | `release/packages/ryoku-desktop/PKGBUILD:696-699`; `system/hardware/power/94-...hook:1-12`, `95-...hook:1-11` | live-session power cutover around any transaction that touches `ryoku-clamshell` | `ryoku-desktop.preinst` (`install`/`upgrade`; non-zero exit aborts the unpack) and `ryoku-desktop.postinst configure`, or a dpkg file trigger `interest-noawait /usr/bin/ryoku-clamshell` processed after configure | libalpm loads hooks before extraction, so the first release with a hook cannot run it (`docs/updates.md:451-455`); dpkg runs the new version's maintainer scripts, so `ensurePackagePowerCutover` (`update.go:813-841`) and the `RYOKU_MANAGED_UPDATE` deferral have no Debian equivalent problem to solve |
+
+---
+
+## 3. Doctor reconcilers (all 118, registry order `internal/doctor/doctor.go:102-223`)
+
+Shared helpers: `sys.PkgInstalled` = `pacman -Q` (`sys.go:47-49`),
+`anyPkgInstalled` (`doctor.go:3871-3878`), `writeRootFile` = `sudo install -D -m
+<mode> -o root -g root` (`doctor.go:776-791`), `readFileSafe` returns
+`"(<error>)"`, never `""`, on failure (`doctor.go:3908-3913`), so the `== ""`
+guards at `reconcile_limine.go:680,786` never fire. On Debian with no pacman,
+every `PkgInstalled` probe returns false, which either silently skips a
+reconciler ("not a packaged install") or makes it report a false fault. Most
+remedy strings that name pacman/yay/mkinitcpio/limine-mkinitcpio/ryoku-pkg-aur-add
+are i18n keys present in all catalogs under `ryoku/i18n/catalog/` and need
+retranslating when reworded (exceptions: the `sudo pacman -S …` literals at
+`doctor.go:1116,1917-1920,1951,1956-1957`).
+
+Count by Arch coupling across the four tables: **Yes** (rewrite or delete) 28,
+**Partial** (package gate, remedy text or one path) 19, **No** (distro-neutral) 71.
+
+### 3a. Package, channel and snapshot reconcilers
+
+| Reconciler (func, file:line) | Drift detected | Fix | External interfaces (cite) | Arch? | Debian rewrite |
+|---|---|---|---|---|---|
+| reconcileSnapper `doctor.go:607` (plan `530-578`, gather `581-603`, create `693-736`) | no `/etc/snapper/configs/root` on a btrfs root; or `/.snapshots` not a subvolume / mode ≠ 0750; `/etc/conf.d/snapper` lacks `root`; snapper, snap-pac or (under Limine) limine-snapper-sync missing/disabled (`546-578`) | auto: `sudo btrfs subvolume create /.snapshots`, chmod/chown, write `/etc/snapper/configs/root` (`458-485`), merge `SNAPPER_CONFIGS` into `/etc/conf.d/snapper` (`487-492,745-770`), `systemctl enable --now snapper-cleanup.timer` and `limine-snapper-sync.service` (`731-733`); remedies `sudo pacman -S snapper snap-pac` (`558,561,615`), `ryoku-pkg-aur-add limine-snapper-sync` (`567`), `https://wiki.archlinux.org/title/Snapper` (`626`) | `/etc/ryoku/snapshots-disabled` (`585`), `pacman -Q snap-pac/limine/limine-snapper-sync` (`587-590`), `/etc/conf.d/snapper` (`597,722`) | Partial | `/etc/conf.d/snapper` → `/etc/default/snapper` (keep its `DISABLE_APT_SNAPSHOT=` line when merging); snap-pac probe → `test -f /etc/apt/apt.conf.d/80snapper`; Limine probes follow the boot-chain choice (§6: GRUB → `/etc/grub.d/41_snapshots-btrfs` + `grub-btrfsd.service`); remedies → `sudo apt install snapper`; doc URL → snapper(8) |
+| reconcileSnapperAccess `doctor.go:638` | unprivileged `snapper -c root --csvout list --columns number` yields no CSV header (`669-683`) | auto: `sudo snapper -c root set-config ALLOW_USERS=<user> SYNC_ACL=yes` (`653-654`) | `$USER`/`$LOGNAME` (`reconcile_rashin_daemon.go:61-66`) | No | none |
+| reconcileSnapperCleanup `reconcile_snapshots.go:25` | `snapper-cleanup.timer` disabled; `snapper-timeline.timer` enabled under `TIMELINE_CREATE="no"`; leaked `Cleanup=timeline` snapshots; untagged `ryoku` snapshots (`33-43`) | auto: enable/disable timers (`65,70`), `snapper delete` in batches of 20 (`197-207`), `snapper modify -c number` (`186-193`), `snapper cleanup number` (`90`) | `sudo -n cat /etc/snapper/configs/root` (`106`); `sudo -n snapper --csvout list` (`123-160`) | No | none for the code. Debian-only drift it does not see: `snapper-boot.timer` (shipped and auto-enabled by Debian's snapper package; `snapper-boot.service` creates a `boot` snapshot with `--cleanup-algorithm number` on every boot), which takes `NUMBER_LIMIT="10"` slots (`doctor.go:473`). Add `systemctl disable --now snapper-boot.timer` here or accept the extra snapshots (Q-6) |
+| reconcileUpdatedbPrune `reconcile_snapshots.go:239` | `/etc/updatedb.conf` `PRUNEPATHS` lacks `/.snapshots` | auto: merge into the one `PRUNEPATHS` line (`270-319`), `writeRootFile` (`256`) | `/etc/updatedb.conf` | No | none (Debian `plocate` ships `/etc/updatedb.conf` with the same `PRUNEPATHS="..."` syntax) |
+| reconcilePacmanLock `doctor.go:826` | `/var/lib/pacman/db.lck` with no `pacman` process | auto: `sudo rm -f` (`837`) | `pgrep -x pacman` (`3880-3882`) | Yes | delete. dpkg/apt locks are fcntl locks and must never be removed. Replace with an "interrupted dpkg" reconciler: `dpkg --audit` non-empty or files in `/var/lib/dpkg/updates/` → `sudo dpkg --configure -a`; check-only reports `wouldRes` |
+| reconcilePacmanCandy `reconcile_pacman.go:72` | `ILoveCandy` absent from `/etc/pacman.conf` `[options]`, one-shot marker `~/.local/state/ryoku/migrations/pacman-ilovecandy` (`25-27`) | auto: insert/uncomment (`34-65`), write marker | `/etc/pacman.conf` | Yes | delete. Nearest apt cosmetic: `Dpkg::Progress-Fancy "1"; APT::Color "1";` in a conffile shipped by a Ryoku package (e.g. `/etc/apt/apt.conf.d/99ryoku-progress`) |
+| reconcileMultilibRepo `reconcile_multilib.go:25` | `lib32-*` installed and no active `[multilib]` section (`36-53`) | auto: uncomment/append the stanza (`96-118`), `sudo pacman -Sy multilib` (`56`) | `pacman -Qq` (`66`), `/etc/pacman.conf` | Yes | i386 is a dpkg foreign architecture; dpkg refuses `--remove-architecture i386` while `:i386` packages are installed, so the Arch drift cannot occur. Remaining drift: an `Architectures:` field in a deb822 source that excludes i386 while `dpkg --print-foreign-architectures` lists it. Rewrite to that check or delete |
+| reconcileConflictingRyokuFiles `doctor.go:3971` (globs `3937-3944`) | files matching the globs that `pacman -Qo` does not own, on a packaged box | auto: `sudo rm -f` (`3986-3991`) | `pacman -Qo` (`3948-3950`) | Yes | dpkg silently replaces unowned non-conffile paths, so `/usr/bin/ryoku-*`, units, polkit rules, plymouth theme and `/usr/share/ryoku/boot/*` need nothing. The one live case is `/etc/systemd/logind.conf.d/10-ryoku-lid.conf`: under `/etc` it becomes a conffile (dh_installdeb), and a pre-seeded unowned copy that differs makes dpkg prompt (or, with `--force-confold`, keep the seed and write `.dpkg-dist`). Rewrite: check that one path with `dpkg-query -S`; remove it before install when unowned, or stop seeding it in the installer |
+| reconcileStaleUpdateRun `doctor.go:857` | `$XDG_RUNTIME_DIR/ryoku-update.json` stuck in `running`/`prompt` with no `pgrep -f "ryoku update"` (`851-853`) | auto: write `{"phase":"idle"}` | runtime file | No | none |
+| reconcileRyokuChannel `doctor.go:1001` | packaged box: `ryoku-keyring` missing (`1008-1012`), `[ryoku]` stanza missing (`1031-1036`), or `Server` not a published channel (`1017-1028`) | auto: append the stanza (`999,1038`), `sudo pacman-key --populate ryoku` (`1044`); remedy `sudo pacman -S ryoku-keyring` | `/etc/pacman.conf` (`1005`) | Yes | keyring package → `ryoku-archive-keyring` (the key file `Signed-By:` names); stanza → write `/etc/apt/sources.list.d/ryoku.sources` whole via `WriteRootFile`; no populate step. If the keyring package ships `ryoku.sources` as a conffile, dpkg will not recreate it after a user deletes it, so this reconciler stays useful |
+| reconcileRyokuSyncDB `doctor.go:1061` | cached `/var/lib/pacman/sync/ryoku.db` fails `LC_ALL=C pacman -Sl ryoku` with a signature error (`1070-1081`) | auto: `DropRyokuSyncDB` + `sudo pacman -Sy` (`1085-1091`) | `sys/release.go:169-190` | Yes | InRelease is a single inline-signed file, so the db/sig desync does not exist. Analogous Debian failure: `Hash Sum mismatch` or `NO_PUBKEY` for the Ryoku URI on `apt-get update`. Detection needs root (lists lock) or the private-tree trick (§1.2); fix `sudo rm /var/lib/apt/lists/<ryoku-host>_*` + `sudo apt-get update`. Rewrite or delete |
+| reconcileBootGuard `reconcile_bootguard.go:22` | packaged box: a pending notice (`26-32`), unit disabled, `/var/lib/ryoku/boot` not sticky-1777 (`40-46,66-72`) | auto: show+delete notice; `sudo systemctl enable ryoku-boot-guard.service`; `sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/ryoku.conf` (`54-57`) | `pacman -Q ryoku-desktop` (`23`) | Partial | gate → dpkg-query. Debian enables the unit and applies tmpfiles at install (dh_installsystemd, dh_installtmpfiles), so the fix path is rarely hit |
+| reconcileUpdateChannel `reconcile_channel.go:22` | checkout's branch ≠ tracked `RYOKU_CHANNEL` (`31-35`) | auto (clean tree only): `git fetch`, `checkout`, `reset --hard origin/<ch>` (`40-49`) | git | No | none |
+| reconcileRepoPointer `reconcile_channel.go:57` | state dir is a symlink; pointer stale while `~/ryoku-arch` is healthy (`61-104`) | auto: desymlink (`122-145`), rewrite `~/.local/state/ryoku/repo` | `git remote get-url origin` must contain `ryoku-arch` (`117`) | No | the clone name `ryoku-arch` (`78,117`, `sys/repo.go:44-46`) follows whatever the port's repo is called |
+| reconcileShippedApps `reconcile_shipped_apps.go:91` | deliver-once apps (`ryokumanifest/manifest.go:161-181`) absent and never provisioned, present but unledgered, or installed as a dependency (`47-65`) | auto: `sudo pacman -D --asexplicit` (`82-87`), ledger `~/.local/state/ryoku/provisioned` (`provision.go:14-50`), `sudo pacman -S --needed --noconfirm <missing>` (`76-81`) | `hasPacman` = `sys.Has("pacman")` (`88`); `pacman -Qdq` (`71-73`) | Yes | gate → dpkg; `-Qdq` → `apt-mark showauto <p>`; `-D --asexplicit` → `apt-mark manual`; install → `apt-get install -y`. App names: `nautilus-python` → `python3-nautilus`; `yazi`, `waifu2x-ncnn-vulkan`, `songrec` are in no suite; `gamescope` resolute only; `openrgb` not in trixie (`findings/cli-other-subcommands.md` §2). `blesh`, `ryomotion` are Ryoku-built |
+| reconcileManifest `reconcile_manifest.go:67` | served `manifest.json` names packages the box never had (`updater/manifest.go:212-268`) | auto: one `sudo pacman -S --needed --noconfirm` (`47-52`) and, for the AUR lane, `sudo yay -S --needed --noconfirm --answerupgrade all` (`56-64`); baseline saved only when everything landed (`125-129`) | `hasPacman`; `pacman -Qq` (`manifest.go:301`); `FetchManifest` (`manifest.go:34-58`) | Yes | gate → dpkg; `-Qq` → dpkg-query; install → `apt-get install -y`; AUR lane merged into the apt lane (§5). The generator (`cmd/ryoku-manifest/main.go:55-86`, `ryokumanifest/generate.go:67-68`) parses PKGBUILD `pkgname=` and `system/packages/*.packages`: on Debian it reads `debian/control` `Package:` stanzas and Debian package lists |
+| reconcileUserEdits `reconcile_useredits.go:23` | overlay README missing/stale; a live-owned file (`sys/useredits.go:51-68`) copied into the overlay | auto: write the guide, move the copy back out | `~/.config/ryoku/user_edits` | No | none |
+| reconcilePacnew `doctor.go:3742` (classify `3662-3685`) | `find /etc -name '*.pacnew'` (`3743`); identical, differs only by the `[ryoku]` stanza (`3706-3731`), or a re-commented `locale.gen` (`3687-3704`) | auto: `sudo rm -f` the safe ones; remedy `sudo pacdiff` (`3781`) | `find`, `/etc/pacman.conf`, `/etc/locale.gen` | Yes | find `\( -name '*.dpkg-dist' -o -name '*.dpkg-old' -o -name '*.ucf-dist' -o -name '*.ucf-old' \)` (`.dpkg-new` is transient during unpack); an identical pair → `rm`; the pacman.conf case disappears (Ryoku's source lives in its own file); the locale.gen case disappears (Debian's `locales` package manages `/etc/locale.gen` through debconf, not as a conffile); remedy: `diff` and merge by hand (Debian has no pacdiff) |
+| reconcileOrphans `doctor.go:3786` | `pacman -Qtdq` non-empty | note only; remedy `sudo pacman -Rns $(pacman -Qtdq)` (`3792-3793`) | pacman | Yes | `LC_ALL=C apt-get -s autoremove`, parse `^Remv (\S+)`; remedy `sudo apt autoremove`. Semantics differ: autoremove keeps packages that are only Recommended by an installed package (`APT::AutoRemove::RecommendsImportant` defaults to true) |
+
+### 3b. Desktop, session and per-user state reconcilers
+
+From the desktop/session survey. Paths are under `ryoku/cli/internal/doctor/`
+unless prefixed.
+
+| Reconciler (func, file:line) | Drift / fix (cites) | External interfaces | Arch? | Debian rewrite |
+|---|---|---|---|---|
+| reconcileShellLanguage `reconcile_language.go:23` | display name stored instead of a catalog code (`34-54`) → rewrite (`56-73`) | `~/.config/ryoku/shell.json`, `RYOKU_LANG`, `LANG/LC_*` (`ryoku/i18n/i18n.go:99,106`) | No | none |
+| reconcileDevResidue `doctor.go:1130` | `~/.local/lib/qt6/qml/Ryoku` or a `~/.local/bin/X` shadowing a `ryoku*`-owned `/usr/bin/X` (`1138,1151-1162`) → `os.RemoveAll` (`1175-1184`) | `pacman -Q ryoku-desktop` (`1134`), `pacman -Qoq` (`1158`), `sys.ResolveRepo` | Yes | dpkg-query status; `dpkg-query -S /usr/bin/X`, owner = text before `: ` (may be `a, b`; skip `diversion by` lines) |
+| reconcileRyostoreCache `doctor.go:1194` | `~/.cache/ryoku/extras` → rename to `ryostore` | `$XDG_CACHE_HOME` | No | none |
+| reconcileDesktopStore `reconcile_desktop_store.go:32` | retired `hypr.json` → merge into `desktop.json` (`42-88`) | user files | No | none |
+| reconcileRetiredCursorLeaf `reconcile_desktop_store.go:170` | `desktop.cursor.material` key → drop (`191-209`) | `desktop.json` | No | none |
+| reconcileSessionTarget `reconcile_session_target.go:64` | links in `~/.config/systemd/user/hyprland-session.target.wants/` → re-enable each under `ryoku-session.target` (`24-94`) | `systemctl --user enable`, `daemon-reload` (`55,61`) | No | none |
+| reconcileSessionComponents `doctor.go:1942` | no polkit agent / portal frontend / pipewire / networkmanager package installed (`1947-1964`) → warn; remedies `sudo pacman -S …` (`1917-1920,1951,1956,1957`) | `pacman -Q` per candidate (`1961`); provider caps `PortalBackend` (`1930-1931`) | Yes | dpkg-query; names: `polkit-gnome` → `policykit-1-gnome` (Ubuntu only; none in Debian), `polkit-kde-agent` → `polkit-kde-agent-1`, `lxsession` → `lxpolkit`, `networkmanager` → `network-manager`; others unchanged. Debian models agents as virtual `polkit-1-auth-agent`, which `dpkg-query -W` does not resolve; remedy → `sudo apt install …` |
+| reconcilePortalRouting `doctor.go:2066` | a higher-precedence `*-portals.conf` routes `default=` elsewhere (`2079-2097`) → rename to `.ryoku-bak` (home) or `sudo mv` (system) (`2107-2118`); stop `xdg-desktop-portal-{gnome,kde,wlr,lxqt}.service`, try-restart frontend (`2121-2125`); remedy `sudo pacman -S xdg-desktop-portal-%s` (`2098-2100`) | `XDG_CONFIG_DIRS`/`XDG_DATA_DIRS` portal dirs (`2003-2028`) | Partial | remedy text; unit names: Debian's xdg-desktop-portal-kde 6.3.5 ships `plasma-xdg-desktop-portal-kde.service`; xdg-desktop-portal-lxqt ships no user unit. The `sudo mv` also renames package-owned files/conffiles |
+| reconcilePortalSession `reconcile_portal_session.go:140` | frontend lacks `org.freedesktop.portal.ScreenCast` or predates the session (`91-216`) → `systemctl --user restart xdg-desktop-portal.service` + re-probe; remedy `sudo pacman -S xdg-desktop-portal-<b>` (`127-137`) | `busctl --user introspect` (`98-101`), `loginctl show-session -p Leader` (`64`), `/proc/<pid>/stat` (`30-49`), `pacman -Q` (`132`) | Partial | dpkg-query; remedy `sudo apt install …`; unit names unchanged |
+| reconcileAudioService `reconcile_audioservice.go:40` | `wpctl status` hangs >5 s while pipewire runs (`28-38`) → `ryoku-restart-audio` (`57`; script restarts `wireplumber pipewire pipewire-pulse` user units, may `sudo -n usbreset`) | `wpctl`, `pgrep -u <uid> -x pipewire` | No | none (same unit names; `usbreset` in `usbutils`) |
+| reconcileAudioRouting `reconcile_audioroute.go:58` | default sink idle while others carry every stream (`79-85`) → `pactl move-sink-input` (`91-96`) | `pactl` (`28,45,62`) | No | none; on trixie `pulseaudio-utils` (pactl) is only a Suggests of `pipewire-pulse`, so without it this reconciler no-ops (`59-61`) |
+| reconcileKbLayoutCode `reconcile_kb_layout_code.go:30` | xkb descriptions instead of codes (`44-53`) → rewrite + provider apply (`63-75`) | `/usr/share/X11/xkb/rules/{base,evdev}.lst` (`keyboard/xkbrules.go:20-45`) | No | none (`xkb-data`) |
+| reconcileKeymap `reconcile_keymap.go:35` | console `KEYMAP` ≠ session layout, or boot image older than vconsole.conf (`40-47`) → `localectl set-x11-keymap` (`keyboard.go:259`), `sudo mkinitcpio -P` (`keyboard.go:268-275`) | `/etc/vconsole.conf`, `/boot/EFI/Linux/*.efi`, `/boot/initramfs-*.img` (`keyboard.go:150,195-229`) | Yes | read `XKBLAYOUT` from `/etc/default/keyboard`; glob `/boot/initrd.img-*`; write via `/etc/default/keyboard` + `setupcon` (localed is read-only on Debian, §1.15); `update-initramfs -u -k all` or `dracut --regenerate-all --force`. As-is on trixie it always reports ok (no `KEYMAP=`, globs match nothing) |
+| reconcileKeyboardSeed `reconcile_keymap.go:134` | store still `us` while the system indicates another layout (`135-163`) → seed once (`168-177`) | `/etc/X11/xorg.conf.d/00-keyboard.conf`, `/etc/vconsole.conf`, `/etc/locale.conf` (`keyboard.go:144-192`) | Yes | read `/etc/default/keyboard` `XKBLAYOUT=`; `/etc/locale.conf` exists on trixie (`/etc/default/locale` links to it) |
+| reconcileLockscreen `reconcile_lockscreen.go:268` | lock bundle missing or drifted from `/usr/share/ryoku/lockscreen/qylock`; SDDM greeter skin drifted (`74-137,204-248,316-367`) → re-stage via `install-qylock`; with passwordless sudo refresh `/usr/share/sddm/themes/ryoku` and `/usr/share/ryoku/lockscreen/ryoku-greeter` (`96-155`) | `ryoku-power-cutover generation-guard-start\|stop` (`184-190`), `sudo -n true` (`347`) | No | none (same sddm paths) |
+| reconcileCursorTheme `doctor.go:2217` | configured theme has no `cursors/` under `/usr/share/icons`, `~/.local/share/icons`, `~/.icons` (`2136-2156`) → reset to Bibata-Modern-Ice + `cursor.set` via provider (`2238-2252`); remedy "install ryoku-cursors" (`2232`) | `desktop.json` | No | none; Debian `bibata-cursor-theme` 2.0.6 ships the same dirs, so `ryoku-cursors` must `Conflicts/Replaces` it (as the PKGBUILD does at `release/packages/ryoku-cursors/PKGBUILD:35-37`) |
+| reconcileGtkSession `doctor.go:2332` | gsettings `gtk-theme` ≠ name derived from theme.json (`2263-2278,2340-2356`), or `gtk-{3,4}.0/settings.ini` missing → `gsettings set`; copy from base config (`2311-2321,2374`) | `gsettings` (`libglib2.0-bin`) | Partial | code none; `adw-gtk3` (Arch `adw-gtk-theme`, `ryoku-desktop/PKGBUILD:64`) is in no Debian/Ubuntu suite, and `gsettings set` succeeds without it |
+| reconcileIconFont `doctor.go:1103` | `ttf-material-symbols-variable` (or `-git`) not installed (`1104-1108`) → `sudo pacman -S --needed --noconfirm …` (`1114`) | `pacman -Q` | Yes | dpkg-query + `apt-get install -y <Ryoku-built font deb>`; no suite packages Material Symbols |
+| reconcileFrameBarsStyle `doctor.go:1364` | style not slate/ryoku-frame → set | shell.json | No | none |
+| reconcileShellConfig `doctor.go:1219` | `migrateShellConfig` changes (`1857-1906`) → rewrite | shell.json | No | none |
+| reconcileLoginShell `reconcile_login_shell.go:114` | `desktop.env SHELL` ≠ `/etc/passwd` shell (`121-127`) → set override, `systemctl --user set-environment`, `dbus-update-activation-environment --systemd` (`56-59,132-139`) | `/etc/passwd` | No | none in code; on Debian the account shell is `/bin/bash` while the Hub writes `/usr/bin/bash` (`ryoku/hub/backend/shellpref.go:19-21`), and the literal compare at `:125` treats that as drift |
+| reconcileLegacyStyleKnobs `doctor.go:1445` | retired style keys → strip | shell.json | No | none |
+| reconcileSumiBar `doctor.go:1517` | retired bar styles/rails → qsbar | shell.json | No | none |
+| reconcileDockStore `doctor.go:1258` | qsbar.dock* keys → top-level `dock` | shell.json | No | none |
+| reconcileRetiredMenus `reconcile_screenshot_menu.go:20` | retired menu keys → strip | shell.json | No | none |
+| reconcileRetiredWallpaperKeys `reconcile_retired_wallpaper_keys.go:22` | retired wallpaper keys → move dir into `ryogami.json`, strip | shell.json, ryogami.json | No | none |
+| reconcileWidthCycle `reconcile_width_cycle.go:29` | <2 preset widths → default + provider apply | desktop.json | No | none |
+| reconcileRyogamiWallpaper `reconcile_ryogami_wallpaper.go:79` | `ryogami.service` not enabled/failed/inactive, or `awww-daemon` running → daemon-reload/enable/reset-failed/`pkill -x awww-daemon`/restart (`111-141`) | `systemctl --user`, `pgrep` | No | none |
+| reconcileRyowallsRemoval `reconcile_ryowalls_removal.go:40` | ryowalls leftovers → RemoveAll | home paths | No | none |
+| reconcileCaptureModule `reconcile_screenshot_menu.go:129` | QS modules exactly [home, notifications, weather] → append capture | shell.json | No | none |
+| reconcileStageModule `reconcile_stage_module.go:21` | depth/parallax modules → stage | shell.json | No | none |
+| reconcileRyostageCache `reconcile_stage_module.go:193` | old venv + depth/parallax state → remove | state dir | No | none |
+| reconcileStageLeftovers `reconcile_stage_module.go:234` | migration leftovers → remove | home paths | No | none |
+| reconcileLegacySystemSidebar `reconcile_system_sidebar.go:16` | `frameBars.surfaces.system` → strip | shell.json | No | none |
+| reconcileStashSidebar `reconcile_stash_sidebar.go:16` | stash anchor left → right | shell.json | No | none |
+| reconcileGhostty `reconcile_ghostty.go:58` | `config-file = ryoku-colors` missing → wrap/append + marker | `~/.config/ghostty` | No | none |
+| reconcileObsidianSnippet `reconcile_obsidian.go:22` | vault lacks the ryoku snippet symlink/enable → create | `obsidian` / `~/.config/obsidian/obsidian.json` | No | none (Flatpak vault config under `~/.var/app` not probed on either distro) |
+| reconcileBrowserTheme `reconcile_browser.go:28` | native-messaging manifests missing/stale → write `ryoku-browser-host` + manifests (`90-97,147-168`) | `~/.mozilla`, `~/.config/{chromium,…}/NativeMessagingHosts` (`57-66`) | No | none for Debian firefox-esr/chromium; Ubuntu's firefox/chromium are snaps (profiles not at these paths) |
+| reconcileZen `reconcile_zen.go:100` | `distribution/policies.json` drift → write, `sudo install` on EACCES (`149-163`) | roots `/usr/lib/zen-browser`, `/opt/zen-browser-bin`, `/opt/zen`, `~/.local/opt/zen`, PATH-derived (`72-90`) | Partial | none required; roots must include wherever the port's Zen .deb installs (§5) |
+| reconcileZenUserChrome `reconcile_zen_userchrome.go:23` | profile lacks the animations sheet/import → write | `~/.config/zen/*` | No | none |
+| reconcileLauncherLocalFrostDefault `reconcile_launcher.go:26` | `bgBlur == 12` once → 2 + marker | launcher.json | No | none |
+| reconcileMimeDefaults `reconcile_mime_defaults.go:49` | user mimeapps.list copies a lower layer → drop entries (`85-95,206-236`) | XDG mimeapps chain (`28-45`) | No | none |
+| reconcileKeyring `reconcile_keyring.go:17` → `keyring/reconcile.go:27` | mode unrecorded / default keyring mismatch / PAM wiring vs mode / autologin + unlock-on-login / never-ask with encrypted keyring (`33-88`) → user-side writes; remedy `sudo ryoku keyring apply-pam <mode>` (`65`) | `/etc/pam.d/sddm` (`keyring/pam.go:25-48`), `/etc/sddm.conf(.d)` | Yes | detection must accept `-auth`/`-session` first fields; anchors `@include common-auth`/`common-session` (§1.15) |
+
+### 3c. Shell runtime, greeter, branding and hardware reconcilers
+
+From the runtime/hardware survey. Paths are under `ryoku/cli/internal/doctor/`
+unless prefixed.
+
+| Reconciler (func, file:line) | Drift / fix (cites) | External interfaces | Arch? | Debian rewrite |
+|---|---|---|---|---|
+| reconcileGreeterTheme `doctor.go:2411` | `/usr/share/sddm/themes/ryoku` not root-owned / not world-readable (`2394-2402`) → `sudo chown -R root:root`, `sudo chmod -R a+rX` (`2431-2434`) | stat | No | none |
+| reconcileGreeterDisplayServer `doctor.go:2524` | `/etc/sddm.conf.d/10-ryoku-wayland.conf` ≠ generated body (`2442-2512`: `DisplayServer=wayland`, GreeterEnvironment with `QT_QPA_PLATFORM=wayland`, `CompositorCommand=/usr/share/ryoku/lockscreen/ryoku-greeter` or `weston --shell=kiosk [--renderer=pixman]`, `SessionCommand=`) → writeRootFile (`2542,2552`) | `/usr/bin/weston` (`2528`), `/sys/class/drm/card*/device/vendor` | No | none in the reconciler (Debian sddm ships `/usr/share/sddm/scripts/wayland-session`; weston ships `kiosk-shell.so`). The wired `ryoku-greeter` reads `00-keyboard.conf`/`vconsole.conf` (`ryoku/lockscreen/sddm/ryoku-greeter:100,109`) → add `/etc/default/keyboard`; its `modetest` is in `libdrm-tests`; `qt6-wayland` must be installed for `QT_QPA_PLATFORM=wayland` |
+| reconcileGreeterCursor `doctor.go:2594` | no `/usr/share/icons/default/{index.theme,cursors}` (`2561-2583`) → write `Inherits=Bibata-Modern-Ice` stub (`2573-2575,2609`) | writeRootFile | Partial | on Debian `/usr/share/icons/default/index.theme` is the `x-cursor-theme` alternative (Adwaita at priority 90 vs bibata-cursor-theme's 50), so the existence test always passes and the reconciler never acts; use `update-alternatives --query x-cursor-theme` / `--set x-cursor-theme /usr/share/icons/Bibata-Modern-Ice/cursor.theme`. `sudo install` would replace the alternative's symlink with a regular file |
+| reconcileFastfetchEmblem `doctor.go:2669` | config.jsonc source `fastfetch-emblem.png` missing → copy from base (`2683`) | user files | Partial (text) | message "the readout shows the Arch logo" (`2685,2689,2695`) → distro-neutral wording |
+| reconcileRiceEmblem `doctor.go:2771` | active rice emblem not applied → `ryoku-hub rice emblem` (`2791`) | ryoku-hub | No | none |
+| reconcileRyotunes `reconcile_ryotunes.go:32` | stale Chromium-wrapper `~/.local/bin/ryotunes`; managed box lacks `pacman -Q ryotunes` (`54-55`); `ryotunesd.socket` not enabled (`60,135`); `pacman -Qoq /usr/bin/ryotunes` fails (`66`); newer release (`123`) → delete stale files, `ryotunesrelease.Ensure` (`100`), `systemctl --user enable --now ryotunesd.socket` (`109-110`); remedy `sudo pacman -S --overwrite /usr/bin/ryotunes ryotunes` (`68`) | ryotunesrelease (§1.14) | Yes | dpkg-query status and `-S`; remedy `sudo apt install --reinstall ryotunes`; release contract per §1.14 / Q-4. As-is, every run calls `Ensure`, which fails at `pacman -Qip` |
+| reconcileFastfetchOSLine `doctor.go:2718` | `ryoku version 2>/dev/null` → `ryoku version --pretty` | user file | No | none |
+| reconcileBrandLogo `doctor.go:2857` | unreadable `markImage` → blank it | brand.json | No | none |
+| reconcileRyodecors `doctor.go:2914` | missing files from `/usr/share/ryoku/ryodecors` in `~/Pictures/ryodecors` → copy | package path | No | none |
+| reconcileHyprlandConfig `doctor.go:3355` | monitors/gpu/keyboard.lua fail `luac -p` (`3552-3553`) or bracket balance (`3562-3580`) → `ryoku-monitor persist` / `ryoku-gpu persist` / safe seed (`3315-3349,3533-3546`), provider reload | `luac`, ryoku-monitor, ryoku-gpu | Partial | `/usr/bin/luac` is the `lua-compiler` alternative (lua5.1 priority 110, lua5.3 120, lua5.4 20, lua5.5 20); Hyprland trixie-bpo 0.55.2 links Lua 5.4, forky/sid 0.56.2 Lua 5.5 → probe `luac5.4`/`luac5.5` matching Hyprland before `luac` |
+| reconcileNiriConfig `doctor.go:3432` | `niri validate -c` fails (`3450`) → provider Apply + revalidate (`3467-3471`) | niri | No | none (niri is in no Debian/Ubuntu suite) |
+| reconcileWmPlugins `reconcile_wm_plugins.go:129` | enabled plugins built against other headers (`31-71`) → `ryoku-wm-hyprland plugins rebuild --stale` (`76`); remedy `sudo pacman -S --needed base-devel cmake git` (`106`) | provider: `pkg-config --exists hyprland`, `version.h` fallback `/usr/include/hyprland/src/version.h` (`ryoku/wm/hyprland/config_plugins_tier.go:266-273,648-659`), `pacman -Q <pkg>` (`:686-700`), hyprpm tree `~/.local/share/hyprpm` | Partial | remedy → `sudo apt install build-essential cmake git pkg-config hyprland-dev`; Debian's `hyprland.pc` prefix resolves to `/usr/include/x86_64-linux-gnu/hyprland/src/version.h`, only the fallback path is wrong; `pacman -Q` → `dpkg-query -W -f='${Version}'` |
+| reconcileBorderPin `reconcile_border_pin.go:135` | palette-following colours but `col.active_border` pinned in `~/.config/hypr/settings.lua` → provider Apply + reload | provider | No | none |
+| reconcileThemeLua `doctor.go:3483` | `~/.config/hypr/theme.lua` exists → remove | user file | No | none |
+| reconcileFollowMouseDefault `doctor.go:3001` | `followMouse == 2`, no marker → 1 + Apply | user files | No | none |
+| reconcileThemeFollowDefault `reconcile_theme_follow.go:58` | `followWallpaper:false` with no palette, no marker → true | user files | No | none |
+| reconcileQuickshell `reconcile_quickshell.go:22` | no `qs`/`quickshell`; `--version` loader failure (`88-123`); owner `pacman -Qoq` (`150`), foreign `pacman -Qmq` (`158`); Qt newer than binary via `/usr/lib/libQt6Core.so.6` mtime (`20,180`) → move stale `~/.local/lib/**.so`; `sudo pacman -S --needed --noconfirm quickshell` (`75`); remedies `sudo pacman -S quickshell` / `-Syu` (`27,40,69,77,81`) | pacman, Qt lib path | Yes | `dpkg-query -S`; foreign → `apt list --installed '?obsolete'`; Qt path `/usr/lib/x86_64-linux-gnu/libQt6Core.so.6`; install `apt-get install -y quickshell` (`-t trixie-backports` on trixie; absent in resolute). Debian quickshell depends on `qt6-base-private-abi (= 6.x.y)`, so apt cannot move Qt past it; the guarded failure only affects non-archive builds |
+| reconcileConfigTree `reconcile_config_tree.go:77` | base ships a provider dir but `~/.config/<dir>/<entry>` missing → `updater.Materialize` (`31,92`), `ryoku-power-cutover session-start` (`41-43,107`) | `/usr/share/ryoku/config` | No | none |
+| reconcileShellLoad `reconcile_shell_load.go:39` | no shell surface for 8 s and "Failed to load configuration" in `~/.local/state/ryoku/surfaces/shell.log` or `qs -c shell` (`100-119`) → move overrides to `.broken`, restore base files, restart `ryoku-shell` (`83-87,209-223,276-278`) | qs, systemctl --user | No | none (Debian quickshell ships `/usr/bin/qs`) |
+| reconcileShellDaemon `doctor.go:3049` | `ryoku-shell.sock` ping fails / signature mismatch / exe deleted (`3123-3270`) → quit, `dbus-update-activation-environment --systemd --all`, daemon-reload, restart; fallback `setsid /usr/bin/ryoku-shell daemon` (`3145-3168,3284-3298`) | as listed | No | none |
+| reconcileShellInstances `reconcile_shell_instances.go:30` | ≥2 `qs -c shell` processes → SIGTERM/SIGKILL strays (`59-219`) | /proc, systemctl --user | No | none |
+| reconcileRashinDaemon `reconcile_rashin_daemon.go:97` | `ryoku-rashin.service` not enabled/failed; no linger; skill links wrong (`42-59,220-254`) → `ryoku-rashin ensure`, `sudo loginctl enable-linger`, start, `ryoku-rashin wire` (`109-162`) | as listed | No | none |
+| reconcileAiUsageTimer `reconcile_rashin_daemon.go:171` | `ryoku-ai-usage.timer` not enabled → enable (`182`) | systemctl --user | No | none |
+| reconcileProwlAgent `reconcile_rashin_daemon.go:195` | rashin on and no `prowl`/`prowl-agent` → remedy `sudo pacman -S prowl-agent` (`207`) | none | Partial (text) | `sudo apt install prowl-agent` (Ryoku-built .deb) |
+| reconcileRecordingsDir `reconcile_recordings.go:75` | recordings dir/symlink layout (`28-154`) → mkdir, move, symlink | user dirs | No | none |
+| reconcileFailedUnits `doctor.go:3587` | `systemctl [--user] --failed` (`4005-4015`) → reset-failed `app-*.scope` | systemctl | No | none |
+| reconcileBtrfsHealth `doctor.go:3619` | root ro (`3623`) or non-zero `sudo -n btrfs device stats /` (`3628-3639`) → report | findmnt, btrfs | No | none |
+| reconcileWifiRegdom `reconcile_wifi_regdom.go:130` | regdomain `00` with wireless present (`31-94`) → country from `/etc/locale.conf` `LANG` (`99-128`), `sudo ryoku-wifi-regdom set <CC>` (`156`) | helper `system/hardware/network/ryoku-wifi-regdom`: writes `/etc/conf.d/wireless-regdom` (`:32,60-93`, read by Arch wireless-regdb's udev rule), `/etc/iwd/main.conf` (`:162`), `iw reg set` (`:164`); polkit grant to group `wheel` (`48-ryoku-wifi-regdom.rules:9`) | Partial (helper) | helper: `/etc/conf.d/wireless-regdom` → `/etc/modprobe.d/ryoku-regdom.conf` `options cfg80211 ieee80211_regdom=<CC>` (Debian wireless-regdb has no udev rule; no crda); `get` must stop reading the conf.d file as "configured" (else a false OK after reboot); polkit `wheel` → `sudo` |
+| reconcileAsusAura `reconcile_asus_aura.go:39` | ASUS hardware (`ryoku-hw-asus-aura`) and `pacman -Q asusctl`/`tlp`, `asusd.service` (`29-35`) → `sudo pacman -S --needed --noconfirm asusctl` (`20-22,56`), start `asusd` (`69`) | pacman, systemd | Yes | dpkg-query; `apt-get install -y asusctl` (Ryoku-built .deb with `Conflicts: tlp`, as `release/packages/asusctl/PKGBUILD:12`) |
+| reconcileQMK `reconcile_qmk.go:44` | QMK/VIA hidraw device and no `pacman -Q qmk-hid` (`31-35`) → `ryoku-pkg-aur-add qmk-hid` (`18`), `udevadm control --reload` + `trigger` (`19-24`) | AUR helper | Yes | `apt-get install -y qmk-hid` (Ryoku-built .deb; not in any suite) |
+| reconcileBacklight `reconcile_hardware.go:26` | laptop without a backlight / without `brightnessctl` / hybrid GPU with firmware-only backlight (`35-183`) → report; remedy `sudo pacman -S brightnessctl` (`37`), `supergfxctl` hint (`52`) | sysfs, journalctl | Partial (text) | `sudo apt install brightnessctl`; supergfxctl is in no suite |
+| reconcileDgpuPanel `reconcile_dgpu_panel.go:423` | NVIDIA/nouveau dGPU drives every connected panel and never runtime-suspends (`87-214`) → report; remedies `ryoku-gpu-mux set hybrid` (`357`), `/etc/modprobe.d/nvidia.conf` `NVreg_DynamicPowerManagement=0x02` + `sudo mkinitcpio -P` (`363`) | sysfs, procfs, `nvidia-smi` | Partial (text) | remedy → `options <module> NVreg_DynamicPowerManagement=0x02` in a Ryoku-owned `/etc/modprobe.d/` file (Debian non-free's module is `nvidia-current`) + `sudo update-initramfs -u` |
+| reconcileGpuPin `reconcile_gpu_pin.go:80` | `ryoku-gpu check-pin` → persist/disable | ryoku-gpu | No | none |
+| reconcileRenderPinPanel `reconcile_gpu_pin_panel.go:98` | render pin on NVIDIA while the panel is on another driver → note | ryoku-gpu, sysfs | No | none |
+| reconcilePpdAmdgpu `reconcile_ppd_amdgpu.go:89` | `powerprofilesctl list-actions` has amdgpu_dpm/panel_power enabled → warn | powerprofilesctl | No | none (power-profiles-daemon 0.30 in all suites) |
+| reconcileDisplayModes `doctor.go:3508` | `ryoku-monitor settle --check` fails → `ryoku-monitor settle` | ryoku-monitor | No | none |
+| reconcilePhantomOutput `reconcile_phantom_output.go:88` | enabled nameless 0-mm non-panel output → note naming `~/.config/hypr/monitors_user.lua` on every compositor (`83-85`) | provider | No | none |
+| reconcileFingerprintModule `reconcile_fingerprint.go:75` | enrolled reader and no `/usr/lib/security/pam_fprintd_grosshack.so` (`37,43-56`) → `ryoku-pkg-aur-add pam-fprint-grosshack` (`80`) | AUR helper, PAM dir | Yes | path → `/usr/lib/x86_64-linux-gnu/security/pam_fprintd_grosshack.so`; install a Ryoku-built .deb |
+| reconcileKeplerNvidia `reconcile_hardware.go:233` | Kepler GPU (`lspci` "nvidia"+"gk") with `pacman -Q nvidia-580xx-dkms` (`209-216`) → `sudo pacman -R`, rm `/etc/modprobe.d/nvidia.conf` and `/etc/mkinitcpio.conf.d/nvidia.conf`, rebuild via `limine-mkinitcpio` or `mkinitcpio -P` (`217-226,307-310,363-368`) | pacman, modprobe.d, mkinitcpio | Yes | Kepler-incompatible Debian packages `nvidia-kernel-dkms`/`nvidia-open-kernel-dkms` (550), `nvidia-tesla-535-kernel-dkms`; Ubuntu `nvidia-dkms-580[-open]`; `apt-get purge -y`; `update-initramfs -u -k all`; never touch `/etc/modprobe.d/nvidia.conf` on Debian (see next row) |
+| reconcileNvidiaModeset `reconcile_hardware.go:312` | driver active (`262-280`, Arch package names at `279`); "blacklist nouveau" in `/etc/modprobe.d/nvidia.conf` with no module for any kernel (`295-325`); or modprobe + mkinitcpio `MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)` drop-ins missing (`287-291,335-353`) → write/remove files, rebuild; message `pacman -Syu nvidia-open` (`333`) | pacman, `modinfo -k`, modprobe.d, mkinitcpio | Yes | package list → Debian `nvidia-kernel-dkms`, `nvidia-open-kernel-dkms`, `nvidia-tesla-{470,535,550}-kernel-dkms`; Ubuntu `nvidia-dkms-<N>[-open]`, `linux-modules-nvidia-<N>-generic`. `/etc/modprobe.d/nvidia.conf` is a Debian alternatives symlink (glx-alternative-nvidia) or a conffile of the NVIDIA CUDA repo's `nvidia-kernel-support`; `sudo install` replaces the symlink with a regular file and drops Debian's `install nvidia modprobe -i nvidia-current` → use `/etc/modprobe.d/ryoku-nvidia.conf`. Modules → lines in `/etc/initramfs-tools/modules` or dracut `force_drivers+=`. Debian already blacklists nouveau (`/etc/modprobe.d/nvidia-blacklists-nouveau.conf`). As-is on Debian the drop-in is written, `mkinitcpio` is missing, and every later run reads the drop-in as OK |
+| reconcileNvidiaGuardHook `reconcile_hardware.go:414` | `/etc/pacman.d/hooks/ryoku-nvidia.hook` ≠ canonical text (`380-404`: triggers on `usr/lib/modules/*/vmlinuz`, `nvidia*`, Exec `/usr/bin/ryoku-nvidia-guard`) → writeRootFile (`425`) | guard script uses `pacman -Qq`, `/etc/pacman.d/hooks`, mkinitcpio (`system/hardware/drivers/ryoku-nvidia-guard:34-109`) | Yes | `/etc/kernel/postinst.d/zz-ryoku-nvidia-guard` (sorts after `dkms`) + `DPkg::Post-Invoke` in `/etc/apt/apt.conf.d/` for driver package changes (no target filter; the script must detect them) |
+| reconcileNvidiaSleepUnits `reconcile_hardware.go:473` | `nvidia-{suspend,hibernate,resume}.service` present and not all enabled → `sudo systemctl enable` (`488-489`) | systemd | Partial (gate) | gate per previous rows; Debian `nvidia-suspend-common` ships and enables the units at install; the NVIDIA CUDA repo's 615 driver ships none |
+| reconcileFlatpakRemote `reconcile_flatpak.go:40` | no `flathub` remote → `sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo` (`96-98`); reachability via `curl -fsS --max-time 6` (`86-91`) | flatpak, curl | No | none |
+
+Tests encoding these assumptions: `doctor_nvidia_test.go:17-21,38-41,50-135` (mkinitcpio drop-in, pacman hook text,
+`nvidia-580xx-dkms`); `reconcile_quickshell_test.go:49-125` (fake `pacman` answering `-Qoq`/`-Qmq`,
+`quickshell-git`); `reconcile_wm_plugins_test.go:76` ("base-devel"); `doctor_test.go:733-748` (cursor index stub);
+`ryotunesrelease/ryotunesrelease_test.go:80-93,145-160,257-287,348-350,457,541`.
+
+### 3d. Boot-chain reconcilers
+
+Two variants: (a) keep Limine on Debian (requires building limine,
+limine-entry-tool and limine-snapper-sync as .debs plus Ryoku-authored Debian
+kernel hooks, §6); (b) GRUB + grub-btrfs. Upstream read at the tags Ryoku pins:
+limine-entry-tool 1.37.1 (`release/packages/limine-mkinitcpio-hook/PKGBUILD:12-17`),
+limine-snapper-sync 1.31.0 (`release/packages/limine-snapper-sync/PKGBUILD:10-14`),
+grub-btrfs v4.14.
+
+| Reconciler (func, file:line) | Drift / fix (cites) | External interfaces | Arch? | (a) keep Limine | (b) GRUB + grub-btrfs |
+|---|---|---|---|---|---|
+| reconcileSwapSubvolume `doctor.go:420` | active swapfile in a non-subvolume btrfs dir while root snapshots are configured (`421-428`) → auto only when the dir holds only the swapfile: `sudo swapoff`, `rm`, `rmdir`, `btrfs subvolume create`, `btrfs filesystem mkswapfile --size <KB>k`, `swapon` (`3845-3862`) | `/proc/swaps` (`3803-3831`), statfs magic (`sys/paths.go:35-41`), inode 256 (`paths.go:55-61`) | No | unchanged | unchanged |
+| reconcileLimineLayout `reconcile_limine.go:132` (plan `81-110`) | shadow `/boot/limine/limine.conf`, `default_entry: 1` / placeholder keys, legacy `/boot/EFI/limine/limine.efi` → backup, merge (`381-445`), `sudo limine-install` (`189`), copy `/usr/share/limine/BOOTX64.EFI` (`193-198`), retire NVRAM entries via `efibootmgr -B` (`211-220`), `ryoku-windows-entry sync` (`225-226`) | `pacman -Q limine` (`114`), `efibootmgr`, `findmnt --target /boot`, `lsblk -no PKNAME` (`565-587`) | Yes | gate on dpkg; ship `BOOTX64.EFI` at `/usr/share/limine/` or set `LIMINE_BINARY_PATH`; read `ESP_PATH` from `/etc/default/limine` instead of hard-coded `/boot`; only the default_entry/dirty-root heal applies to a fresh Debian install | delete (no analog; `update-grub` regenerates `grub.cfg`) |
+| reconcileLimineBootEntry `reconcile_limine.go:599` | no active NVRAM entry loading `\limine_x64.efi` or labelled `Limine` (`518-528`) → `sudo efibootmgr --create --disk --part --label Ryoku --loader '\EFI\limine\limine_x64.efi' --unicode` (`585-586,616`) | efibootmgr 18 (same on all suites) | Partial | gate on dpkg; under Secure Boot the loader becomes the shim (`523,586`) | look for `\EFI\<id>\shimx64.efi`/`grubx64.efi`; fix with `grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=<id>` |
+| reconcileAlongsideBootEntry `reconcile_alongside.go:83` | alongside box (`/efi` in fstab + `/efi/EFI/ryoku/limine.conf`) lacks an NVRAM entry for `\EFI\ryoku\BOOTX64.EFI` (`31-66`) → remedy only (`98`) | `/etc/fstab`, `efibootmgr -v` (`71`) | No | unchanged | match `\EFI\<id>\shimx64.efi` on `/boot/efi` |
+| reconcileLimineUKITree `reconcile_limine.go:671` | `ENABLE_UKI=yes` in `/etc/default/limine` (substring, also matches a comment) and hook missing / no UKI tree / flat entries (`676-781`) → `ryoku-pkg-aur-add limine-mkinitcpio-hook` (`694`), `sudo limine-update` (`702-703`), promote conf (`718`), `sudo limine-snapper-sync` (`723-724`) | `pacman -Q limine`, `pacman -Q limine-mkinitcpio-hook` (`672,683`) | Yes | probe the Ryoku Debian kernel hook (`/etc/kernel/postinst.d/zz-ryoku-limine` or its .deb); fix `apt-get install <hook deb>` and run it per kernel; build UKIs with `ukify build` (systemd-ukify) or `dracut --uefi` | replace with "GRUB + grub-btrfs wired": `/boot/grub/grub.cfg`, executable `/etc/grub.d/41_snapshots-btrfs`, `grub-btrfsd.service` enabled → `update-grub` + `systemctl enable --now grub-btrfsd` |
+| reconcileLimineKernelImages `reconcile_limine_images.go:201` | entry per installed kernel (keyed by `/usr/lib/modules/*/pkgbase`) missing/stale/older than `/usr/lib/modules/<v>/vmlinuz`; stray entries (`46-198`) → `sudo limine-mkinitcpio` or `sudo mkinitcpio -P` (`reconcile_hardware.go:363-368`), prune, `sudo limine-update` (`194-195`) | `/boot/EFI/Linux/<prefix>_<name>.efi`, `/boot/initramfs-*.img`, `/boot/vmlinuz-<name>` (`172-186`), `comment: Kernel version:` (`104`) | Yes | key by `<ver>` from `/usr/lib/modules/<ver>` + `/boot/vmlinuz-<ver>`; rebuild `update-initramfs -u -k <ver>` + rerun the hook; prune via `limine-entry-tool --remove-kernel/--remove-uki <ver>`. As-is on Debian: pkgbase files do not exist, so it silently reports "no installed kernels to check" (`206-207`) | drift = `/boot/vmlinuz-<ver>` without (or newer than) `/boot/initrd.img-<ver>` → `update-initramfs -u -k <ver>` + `update-grub`; stray → remedy `apt purge linux-image-<ver>` |
+| reconcileLimineDeadEntries `reconcile_limine_entries.go:146` | top-level entry whose `boot():/` image is missing (`45-99`) → drop, repoint default (`105-144`) | `pacman -Q limine` (`147`), `/boot` hard-coded (`154,163`) | Partial | gate on dpkg, ESP from `ESP_PATH` | delete (grub.cfg is regenerated from `/boot/vmlinuz-*`) |
+| reconcileBootSpace `reconcile_boot_space.go:97` | free on `/boot` < 2× largest `*.efi`/`initramfs-*.img` (`43,77-95`) → remedy only: `pacman -Rns <kernel>` / `MAX_SNAPSHOT_ENTRIES` (`112`) | statfs `/boot` | Partial | gate on dpkg; count `initrd.img-*`; scan `$ESP_PATH/EFI/Linux` and `$ESP_PATH/<machine-id>/*`; remedy `apt purge linux-image-<ver>` / `apt autoremove --purge` | measure `/boot` for `initrd.img-*`/`vmlinuz-*`; same remedy plus `MODULES=dep` in `/etc/initramfs-tools/initramfs.conf` |
+| reconcileBootRW `reconcile_boot_rw.go:101` | `/boot` or `/efi` mounted `ro` (`27,39-53`) → `mount -o remount,rw`; vfat: `umount`, `fsck.fat -a`, `mount` (`72-99`) | findmnt, dosfstools | No | add `/boot/efi` if `ESP_PATH=/boot/efi` | targets `/boot/efi` (+ `/boot` if separate) |
+| reconcileInitramfsGPUTrim `reconcile_initramfs.go:73` | `/usr/lib/initcpio/install/ryoku-gpu-trim` exists and `HOOKS=(` in `/etc/mkinitcpio.conf.d/ryoku.conf` lacks it after `autodetect` (`30-71`) → insert + rebuild (`91-97`) | mkinitcpio only | Yes | same as (b), then rerun the limine hook from `/etc/initramfs/post-update.d` | executable `/etc/initramfs-tools/hooks/ryoku-gpu-trim` (runs after `/usr/share/initramfs-tools/hooks`) that deletes `${DESTDIR}/usr/lib/modules/${version}/kernel/drivers/gpu/drm/nouveau` and NVIDIA firmware when nouveau is blacklisted and `nvidia` resolves; drift = hook absent or not executable; fix install + `update-initramfs -u -k all`. dracut: `/etc/dracut.conf.d/ryoku-gpu-trim.conf` `omit_drivers+=" nouveau "` |
+| reconcileLimineAutoboot `reconcile_limine.go:1051` | `default_entry` absent/numeric or `remember_last_entry` absent (`983-1028`) → point at `pickKernelPath` (`932-947`) | `/etc/ryoku/default-kernel`, `/proc/sys/kernel/osrelease` + pkgbase (`925,958-979`) | Partial | gate on dpkg; prefer `uname -r` matched against hook-written names (pkgbase prefs resolve to "" on Debian) | `GRUB_DEFAULT=saved` + `GRUB_SAVEDEFAULT=true` in `/etc/default/grub` + `update-grub` |
+| reconcileLimineOSName `reconcile_limine.go:783` | `TARGET_OS_NAME` in `/etc/default/limine` ≠ "Ryoku…" entry name (`819-854`) → rewrite, `sudo -n systemctl reset-failed snapper-cleanup.service` (`804-809`) | limine-snapper-sync's `snapper-cleanup.service.d/limine-snapper-override.conf` | No | unchanged | delete (`GRUB_BTRFS_SUBMENUNAME` is cosmetic) |
+| reconcileStaleCryptMapper `doctor.go:897` | orphan `/dev/mapper/root` not backing a mount (`921-937`) → `sudo cryptsetup close root` (`911`) | `dmsetup ls --target crypt` (`942`), findmnt | No | unchanged | unchanged; `/usr/sbin/dmsetup` is not on a Debian user's PATH, so the unprivileged probe fails and the reconciler always reports "no crypt mappers present" (§8 I-20) |
+
+Tests encoding these assumptions: `doctor_test.go:753-805,809-896,1132-1232,1593-1655,1872-2020`
+(Limine layout/merge/autoboot fixtures using `vmlinuz-linux`, `initramfs-linux.img`, `//linux`);
+`reconcile_limine_images_test.go:15-210` (pkgbase keys; `:49-78` reads the host's
+`/etc/ryoku/default-kernel` and `/usr/lib/modules/<rel>/pkgbase`, so it is host-dependent);
+`reconcile_limine_entries_test.go:14-104`; `reconcile_initramfs_test.go:11-49` (mkinitcpio
+`HOOKS=(...)`), `:78-91` (`bootImageName` lacks `initrd.img-`); `reconcile_alongside_test.go:8-89`;
+`reconcile_boot_rw_test.go:9-141`; `updater/bootguard_test.go:6-41`.
+
+---
+
+## 4. materialize and the user_edits overlay
+
+### materialize (`internal/updater/materialize.go:156-333`)
+
+**What it does:**
+1. Base = `sys.BaseConfigDir()`: `$RYOKU_CONFIG_BASE`, else `/usr/share/ryoku/config`
+   (`internal/sys/fsops.go:12-17`). Missing base: error telling a checkout to use
+   `ryoku deploy` (`materialize.go:162-169`).
+2. Ensures `~/.config/ryoku` exists (`175`), walks every regular file of the base (`177`, `walkRel` `346-366`).
+3. Seeds (`generatedSeed` `39-57`, plus the whole `nvim/` tree, `63-65`) are copied only when the slot is
+   empty, tested with `Lstat` so a user's dangling symlink counts as filled (`202-213`).
+4. Any other file: if its live bytes match neither the last-laid hash nor the shipped hash, the live file
+   is copied into the overlay as a fork first (`214-230`); then the shipped file is copied atomically
+   (`231-234`, `sys.CopyFile` temp+rename, `fsops.go:33-59`).
+5. Prunes: `~/.config/quickshell` is converged against the base wholesale (`251-261`); withdrawn
+   `wireplumber/wireplumber.conf.d/NN-ryoku-*.conf` drop-ins go (`265-276`); files in the previous
+   manifest and absent now go, except `mimeapps.list` (`284`) and whole trees of a provider the base no
+   longer ships (switched-away compositor, `292-308`).
+6. Lays the overlay last (`309`, `overlayUserEdits` `428-447`), skipping live-owned files.
+7. Records `path<TAB>sha256` for every managed file in `~/.local/state/ryoku/materialized` (`310-318`,
+   `writeManifest` `412-424`).
+8. `systemctl --user try-restart wireplumber.service` when the Bluetooth policy or a drop-in changed
+   (`320-323`).
+9. Renders each laid compositor tree's generated half through `ryoku-wm-<name> apply
+   ~/.config/ryoku/desktop.json` when it is missing (`applyGenerated` `112-139`).
+
+### user_edits (`internal/sys/useredits.go`, `internal/updater/reset.go`)
+
+- Overlay root `~/.config/ryoku/user_edits` (`fsops.go:25-27`); layable files = regular files, not
+  symlinks, not `*.md`, not nested `ryoku/user_edits/` (`useredits.go:17-43`).
+- Live-owned files never come from the overlay: `kitty/user.conf`, `fastfetch/config.jsonc`,
+  `kitty/current-theme.conf`, `ghostty/ryoku-colors`, every provider's `wm.ConfigUserOwned`, and `nvim/`
+  (`useredits.go:51-84`). `reconcileUserEdits` moves stale copies out (§3a).
+- `ryoku reset [path] [-y]` deletes overlay files (all after a confirm), removes the live copy on a
+  packaged box, and re-runs `Materialize` (`reset.go:23-94`).
+
+**Is it distro-neutral?** YES. It is pure Go file I/O plus one user-unit restart and the provider
+binary. It execs nothing distro-specific, reads no package database, and its only system path is the
+base tree.
+
+**What lays the base tree:** `ryoku-desktop` `package()` (`release/packages/ryoku-desktop/PKGBUILD:250-540`;
+`local cfg="$pkgdir/usr/share/ryoku/config"` at `:252`; the quickshell and Hub trees at `:268-275`; app
+trees in the loop that follows), plus each compositor variant: `ryoku-desktop-hyprland/PKGBUILD:51` and
+`ryoku-desktop-niri/PKGBUILD:47` (same `cfg` variable). On Debian the same three packages must install the
+same tree under `/usr/share/ryoku/config`.
+
+**Debian notes:**
+1. Files under `/usr/share` are never conffiles, so dpkg will not prompt or keep `.dpkg-dist` copies; the
+   base must stay out of `/etc`.
+2. When a compositor variant .deb is removed, dpkg deletes its files from `/usr/share/ryoku/config/<dir>`.
+   That is the signal `keepsSwitchedAwayTree` relies on (`materialize.go:84-90`); it works the same.
+3. Some materialized *content* does not behave the same on Debian. For example,
+   `~/.config/chromium-flags.conf` is shipped and laid (test `materialize_test.go:420-433`), but Debian's
+   `/usr/bin/chromium` wrapper sources only `/etc/chromium.d/*` (chromium 150.0.7871.181-1~deb13u1
+   `debian/scripts/chromium:76-77`) and `$CHROMIUM_FLAGS`. Arch's launcher reads the XDG file, so these
+   flags have no effect on Debian. Other content is covered in the config/theming docs.
+4. `ryoku-desktop` is `arch=('x86_64')` because it compiles Go helpers (`PKGBUILD:14-15`). An `Architecture:
+   amd64` .deb carrying `/usr/share` data is valid; lintian reports only an informational tag.
+
+## 5. The AUR leg of `ryoku update`, and what replaces it
+
+### Every place the CLI reaches the AUR today
+
+| Where | What | Cite |
+|---|---|---|
+| `ryoku update --system` | `yay -Sua --noconfirm` (only when `yay` is on PATH) | `update.go:378-386,537-540` |
+| `ryoku status` / Hub | `yay -Qua` listed as system packages | `update.go:1724-1745` |
+| `reconcileManifest` (runs inside every `ryoku update`) | the manifest's `aur` lane: names absent and never present at the baseline are installed with `sudo yay -S --needed --noconfirm --answerupgrade all` | `reconcile_manifest.go:56-64,110-118`; plan `updater/manifest.go:149-151,237-241` |
+| snapshot helper offer | `ryoku-pkg-aur-add limine-snapper-sync` | `update.go:1181-1183`; hint `update.go:1327`; remedy `doctor.go:567` |
+| `reconcileLimineUKITree` | `ryoku-pkg-aur-add limine-mkinitcpio-hook` | `reconcile_limine.go:694` |
+| `reconcileQMK` | `ryoku-pkg-aur-add qmk-hid` | `reconcile_qmk.go:18` |
+| `reconcileFingerprintModule` | `ryoku-pkg-aur-add pam-fprint-grosshack` | `reconcile_fingerprint.go:80` |
+| `ryoku-pkg-aur-add` itself | `yay`/`paru -S --needed --noconfirm <pkg>` per package, refuses root | `system/extras/ryoku-pkg-aur-add:31-66` |
+| CLI package | `optdepends=('yay: AUR package updates during ryoku update')` | `release/packages/ryoku/PKGBUILD:17` |
+
+`limine-snapper-sync` and `limine-mkinitcpio-hook` are also built in the `[ryoku]` repo
+(`release/packages/limine-snapper-sync`, `release/packages/limine-mkinitcpio-hook`). The CLI still routes
+them through the AUR helper, which resolves repo packages too.
+
+### The AUR set (`system/packages/aur.packages`)
+
+| Name (line) | AUR version | Upstream | Upstream release artifact | Debian / Ubuntu archive | .deb recipe for the port's repo |
+|---|---|---|---|---|---|
+| yay-bin (`7`) | 13.0.1-1 | github.com/Jguer/yay | `yay_13.0.1_x86_64.tar.gz` | none | drop (no AUR on Debian) |
+| phinger-cursors (`19`) | 2.2-1 | github.com/phisch/phinger-cursors | `phinger-cursors-variants.tar.bz2` | Debian none; resolute `phinger-cursor-theme` 1.1-0ubuntu2 (older) | `Architecture: all`, unpack to `/usr/share/icons/` |
+| catppuccin-cursors-mocha (`24`) | 2.0.0-1 | github.com/catppuccin/cursors | per-flavour zips (`catppuccin-mocha-*-cursors.zip`) | none | `Architecture: all`, unpack the mocha zips to `/usr/share/icons/` |
+| apple_cursor (`27`) | 2.0.1-1 | github.com/ful1e5/apple_cursor | `macOS.tar.xz`, `macOS-White.tar.xz` (prebuilt) | none | `Architecture: all`; the AUR builds from source with clickgen (`aur.packages:25-27`), but the release tarball is prebuilt |
+| nvibrant-bin (`35`) | 1.3.0-1 | github.com/Tremeschin/nVibrant | `nvibrant-1.3.0-py3-none-manylinux_2_17_x86_64.whl` | none | amd64 .deb installing the wheel; `Depends: python3, python3-packaging` (25.0-1 trixie) |
+| localsend-bin (`38`) | 1.18.2-2 | github.com/localsend/localsend | `LocalSend-1.18.2-linux-x86-64.deb` (upstream .deb) | none | re-host the upstream .deb (or re-sign it into the repo) |
+| voxtype-bin (`45`) | 1.1.1-1 | github.com/peteonrails/voxtype | `voxtype_1.1.1-1_amd64.deb` + `.asc` (upstream .deb) | none | re-host the upstream .deb |
+| ttf-fraunces-variable (`52`) | 1.000-1 | github.com/undercasetype/Fraunces | `UnderCaseType_Fraunces_1.000.zip` | none (`fonts-fraunces` absent) | `Architecture: all` font package to `/usr/share/fonts/truetype/fraunces/` |
+| zen-browser-bin (`60`) | 1.23.2b-1 | github.com/zen-browser/desktop (latest 1.23.3b) | `zen.linux-x86_64.tar.xz` | none | amd64 .deb unpacking to `/opt/zen-browser-bin` (a root `reconcileZen` already probes, `reconcile_zen.go:72-90`) plus `/usr/bin/zen-browser` |
+| pam-fprint-grosshack (`70`) | 0.3.0-1 | gitlab.com/mishakmak/pam-fprint-grosshack (tag v0.3.0) | source | none | meson build; Build-Depends `meson`, `libpam0g-dev`, `libglib2.0-dev`, `libsystemd-dev`, `libfprint-2-dev`, test deps `libpam-wrapper`, `python3-cairo`, `python3-dbus`, `python3-dbusmock`; install the module to `/usr/lib/x86_64-linux-gnu/security/` |
+| qmk-hid (not in the list; installed on demand by `reconcile_qmk.go:18`) | AUR | — | — | none | Ryoku-built .deb |
+
+### Debian replacement: every AUR name served by the port's own apt repo
+
+With these packages in the port's repo, `ryoku update` becomes apt-only. Consequences, all following from
+the code as written:
+
+1. **They join the Ryoku lane.** `installedRyokuSet` takes every installed name the Ryoku repo serves
+   (`ryokuset.go:54-106`), so plain `ryoku update` moves zen, localsend, voxtype, the cursors and the fonts.
+   On Arch only `--system` (yay) moves them.
+2. **They freeze with the release.** On the stable channel the repo directory is a frozen release
+   (`internal/sys/release.go:15-28`, `docs/updates.md:286-297`), so Zen and LocalSend update only when
+   the port tags a release. Browser security fixes then follow the release cadence (Q-8).
+3. **They roll back with the release.** `ryoku rollback --to <tag>` installs every served name at that
+   release's version (`--allow-downgrades`), browser included.
+4. **The port tracks ten upstreams** (nine from the table plus qmk-hid) and rebuilds or re-hosts them.
+   Two of them, localsend and voxtype, publish official .debs.
+5. **Code deletions:** `aurUpdates` (`update.go:1728-1745`), `runAURUpgrade` and the `aur` step in
+   `systemSteps` (`update.go:54,378-386,537-540,612-616`), `installManifestAUR` and the `aurMissed` path
+   (`reconcile_manifest.go:56-64,110-137`), `Plan.AUR` routing (`manifest.go:131,227-241`),
+   `ryoku-pkg-aur-add` call sites (table above), the `yay` optdepend.
+6. **Manifest schema:** `Manifest.AUR` (`ryokumanifest/manifest.go:31`) is part of schema 1 (`:18`). A box
+   refuses a newer schema (`updater/manifest.go:48-50`). Emptying the lane while keeping the field avoids a
+   bump; folding the names into `FirstParty` happens in the generator (`ryokumanifest/generate.go:139-169`).
+7. **The base system keeps its own lane.** The Debian lane becomes `apt full-upgrade` + flatpak; nothing of
+   the AUR's "user's own packages" lane survives.
+
+**Docs vs code (state before the port):**
+- `system/packages/aur.packages:54-60,62-69` says `ryoku update` never revisits this set ("Existing boxes
+  are therefore not given Zen by an update"). But `reconcileManifest`, which runs in every update
+  (`update.go:785`), installs AUR-lane names via yay once a baseline exists (`manifest.go:212-268`,
+  `reconcile_manifest.go:110-118`).
+- `system/packages/README.md:21-23` says the AUR list "Includes the Limine integration hooks and the Bibata
+  cursors". Both ship from `[ryoku]` now (`aur.packages:10-15`, `release/packages/limine-*`).
+
+## 6. Snapshots and rollback: snapper + Limine today, Debian equivalents
+
+### What the Arch build couples together
+
+1. `ryoku update` brackets its own transaction with one snapper pre/post pair (`update.go:1789-1819`) and
+   passes `SNAP_PAC_SKIP=y` (`ryokuset.go:234`) so snap-pac does not add a second pair. Plain `pacman`
+   transactions are snapshotted by snap-pac (`update.go:1154-1159`).
+2. limine-snapper-sync (`/usr/lib/snapper/plugins/10-limine-snapper-sync`, `limine-snapper-sync.service` =
+   `limine-snapper-watcher`, the `snapper-cleanup.service.d/limine-snapper-override.conf` drop-in with
+   `ExecStopPost=limine-snapper-sync --no-force-save`; `release/packages/limine-snapper-sync/PKGBUILD:83-84`)
+   writes a `//Snapshots` tree into `/boot/limine.conf` and copies the matching kernels to the ESP.
+3. Restore runs from the boot menu: boot the snapshot, run `sudo limine-snapper-restore`
+   (`update.go:1306-1330`). `snapper rollback` is unusable because the root is pinned `rootflags=subvol=@`
+   (`update.go:1231-1237`).
+4. The boot guard's last resort points `default_entry` at that snapshot's entry (`bootguard.go:199-250`).
+5. Pruning: the update path runs `snapper cleanup number` (`update.go:1818`). The comment there and
+   `reconcile_snapshots.go:18-24` say the timer route is unreliable because snapper-cleanup's success is
+   coupled to limine-snapper-sync's `ExecStopPost`.
+
+### Debian facts
+
+- `snapper` 0.10.6 is in trixie (0.10.6-1.2), forky/sid (0.10.6-1.3+b1) and resolute (0.10.6-1.3). It ships
+  `/etc/apt/apt.conf.d/80snapper`, `/etc/default/snapper`, `snapper-{boot,cleanup,timeline}.{service,timer}`
+  and `snapperd` (packages.debian.org file lists for trixie/forky/sid; packages.ubuntu.com for resolute).
+- `80snapper` (snapper `debian/80snapper`, verbatim):
+  ```
+  DPkg::Pre-Invoke  { "if [ -e /etc/default/snapper ]; then . /etc/default/snapper; fi; if [ -x /usr/bin/snapper ] && [ ! x$DISABLE_APT_SNAPSHOT = 'xyes' ] && [ -e /etc/snapper/configs/root ]; then rm -f /var/tmp/snapper-apt || true ; snapper create -d apt -c number -t pre -p > /var/tmp/snapper-apt || true ; snapper cleanup number || true ; fi"; };
+  DPkg::Post-Invoke { "if [ -e /etc/default/snapper ]; then . /etc/default/snapper; fi; if [ -x /usr/bin/snapper ] && [ ! x$DISABLE_APT_SNAPSHOT = 'xyes' ] && [ -e /var/tmp/snapper-apt ]; then snapper create -d apt -c number -t post --pre-number=`cat /var/tmp/snapper-apt` || true ; snapper cleanup number || true ; fi"; };
+  ```
+  It runs only when apt drives dpkg, not for a bare `dpkg -i`.
+- `/etc/default/snapper` as shipped (`data/sysconfig.snapper`, installed by `debian/rules`):
+  `SNAPPER_CONFIGS=""` and `DISABLE_APT_SNAPSHOT="no"`. snapper is configured `--with-conf=/etc/default`
+  (`debian/rules`), so `SNAPPER_CONFIGS` is read from this file, not `/etc/conf.d/snapper`.
+  `snapper-cleanup.service` runs `/usr/lib/snapper/systemd-helper --cleanup` over `SNAPPER_CONFIGS`.
+- `snapper-boot.timer` (`OnBootSec=1`, `WantedBy=timers.target`) and `snapper-boot.service`
+  (`snapper --config root create --cleanup-algorithm number --description "boot"`,
+  `ConditionPathExists=/etc/snapper/configs/root`) ship in the package. Debian's debhelper enables timers at
+  install (`debian/changelog` 0.3.3-0.2: "set 10 to enable systemd service by default"), so a Debian box
+  takes a `boot` snapshot every boot once the root config exists.
+- Not packaged in any Debian or Ubuntu suite (sources.debian.org `api/search` returns `exact: null` and
+  `tools/pkgver` prints `-` everywhere): `snap-pac`, `limine`, `limine-snapper-sync`, `grub-btrfs`. Ubuntu
+  resolute has `apt-btrfs-snapshot` 4.0.1build1, a different snapshot mechanism (`@apt-snapshot-*`
+  subvolumes), not installed by default.
+
+### Equivalent of `SNAP_PAC_SKIP=y` (one pair per `ryoku update`)
+
+`80snapper` sources `/etc/default/snapper` after the environment is set, and that file sets
+`DISABLE_APT_SNAPSHOT="no"`, so `sudo env DISABLE_APT_SNAPSHOT=yes apt-get ...` is overwritten. The options
+(decision Q-5):
+
+| Option | Mechanism | Consequence |
+|---|---|---|
+| A | doctor/installer edits `/etc/default/snapper` to `DISABLE_APT_SNAPSHOT="${DISABLE_APT_SNAPSHOT:-no}"`; `ryoku update` runs `sudo env DISABLE_APT_SNAPSHOT=yes apt-get ...` | one pair per update, as on Arch. The file is a conffile, so the next snapper upgrade that changes it prompts (or keeps the edit with `--force-confold`). snapper's own parser also reads this file; how it treats a `${...}` value for a key it does not use was not verified |
+| B | the Ryoku package `dpkg-divert`s `80snapper` and ships a replacement that honours an environment variable | one pair per update; Ryoku owns a copy of snapper's hook |
+| C | drop Ryoku's own pre/post (`update.go:134-136,788`) and keep 80snapper's | one pair per apt run, described `apt` instead of `ryoku-update (from <sha>)`. The boot guard and the rollback hint need the pre number: read `/var/tmp/snapper-apt`, which 80snapper leaves in place |
+| D | keep both | four snapshots per update (two Ryoku, two apt), each followed by `snapper cleanup number`. With `NUMBER_LIMIT="10"` (`doctor.go:473`), the retained history covers about half as many updates |
+
+### Rollback/restore path (follows the boot-chain decision, Q-2)
+
+- **(a) Keep Limine.** Package `limine` (upstream v12.9.3; build deps clang, lld, llvm, nasm and mtools exist
+  in all suites), `limine-entry-tool` 1.37.1 and `limine-snapper-sync` 1.31.0. Both tools are GraalVM native
+  images: build per target suite (glibc 2.41 trixie, 2.43 forky/sid/resolute) with the vendored GraalVM 25 +
+  Gradle 9.6.1, as the PKGBUILDs do (Debian's gradle is 4.x, and openjdk-25 has no native-image). Debian
+  glue the port writes:
+  - `/etc/kernel/postinst.d/zz-ryoku-limine`: `limine-entry-tool --add-kernel|--add-uki`, keeping the
+    `comment: Kernel version:` line that `reconcile_limine_images.go:104` parses.
+  - `/etc/kernel/postrm.d/zz-ryoku-limine`.
+  - `/etc/initramfs/post-update.d/ryoku-limine`.
+  - A `DPkg::Pre-Invoke` replacement for limine-snapper-sync's libalpm lock hook.
+
+  limine-snapper-sync needs no pacman (its watcher's pacman-lock cleanup is inert). `limine-snapper-restore`,
+  `restoreGuide` and `pointBootMenuAtSnapshot` stay as they are. Secure Boot: Limine is not signed by the
+  Debian/Microsoft CA chain, and limine-entry-tool signs only via `sbctl`, which no suite packages.
+- **(b) GRUB + grub-btrfs.** Package grub-btrfs v4.14 from upstream (`make install DESTDIR=... PREFIX=/usr
+  SYSTEMD=true INITCPIO=false GRUB_UPDATE_EXCLUDE=true`; Depends `btrfs-progs`, `grub-common`, `gawk`,
+  `inotify-tools`; Kali's `debian/` dir at gitlab.com/kalilinux/packages/grub-btrfs is a reference). It
+  installs `/etc/grub.d/41_snapshots-btrfs`, `/etc/default/grub-btrfs/config` and `grub-btrfsd.service`.
+  grub-btrfs has no restore tool, so `restoreGuide` (`update.go:1306-1330`) needs one of:
+  - a Ryoku-authored restore helper that, from the booted snapshot, creates `@` anew from
+    `/.snapshots/<id>/snapshot` and moves the old `@` aside. This is the pinned-`subvol=@` equivalent of
+    `limine-snapper-restore`.
+  - a switch to a `snapper rollback`-compatible layout (no `subvol=` pin on the cmdline or in fstab, default
+    subvolume set by snapper). `restoreGuide` would then print `sudo snapper rollback <id>`. This changes
+    the installer's layout (another doc).
+
+  Two more limits under (b):
+  - Snapshots are read-only, and grub-btrfs ships an overlay hook only for mkinitcpio, with dracut via
+    `rd.live.overlay.overlayfs=1`; initramfs-tools has none. Booting a snapshot read-only must therefore be
+    tested.
+  - Per-snapshot kernels are used only when `/boot` is inside the btrfs root.
+- **CLI changes either way:**
+  - `gatherSnapHelpers`/`wantedSnapperHelpers`/`offerSnapperHelpers` (`update.go:1119-1189`): drop snap-pac
+    (80snapper is part of `snapper`); offer the boot-menu sync package of the chosen variant via `apt-get
+    install` (not `ryoku-pkg-add`, which sysupgrades on Arch).
+  - `snapshotsInBootMenu` (`update.go:1458-1462`): (a) dpkg probes; (b) `grub-btrfsd.service` enabled +
+    `/etc/grub.d/41_snapshots-btrfs` executable.
+  - `reconcileSnapper` path and probe fixes (§3a).
+  - `snapper-boot.timer` handling (Q-6).
+  - `pointBootMenuAtSnapshot` per §1.6.
+
+---
+
+## 7. Code-change plan for the Go
+
+### Where the calls already funnel
+
+- `internal/sys` is documented as "process exec, package and unit queries" shared by updater, doctor and
+  materialize (`internal/sys/sys.go:1-5`). It already holds `PkgInstalled` (`sys.go:47-49`, about 60
+  callers) and `InstalledVersion` (`sys.go:58-68`). `internal/sys/release.go` holds all channel/repo
+  config (`PacmanConf`, `RyokuServer`, `SetPackagedChannel`, `DropRyokuSyncDB`, `PacmanSyncDir`).
+- `internal/updater/ryokuset.go` is declared "the only place that decides what `ryoku update` may touch"
+  (`ryokuset.go:29-32`). It already has test seams `runPacman` (`:165`) and `vercmp` (`:180`).
+- Package-var seams already exist for tests: `splitMetaInstalled/Remove` (`update.go:458-463`),
+  `PacmanInstalled/PacmanExplicit` (`manifest.go:300-303`), `appInstalled`, `appInstalledAsDep`,
+  `installShippedApps`, `markAppsExplicit` and `hasPacman` (`reconcile_shipped_apps.go:68-89`),
+  `installManifestPkgs/AUR` (`reconcile_manifest.go:45-65`), `pkgOwnsFile` (`doctor.go:3948`), and the
+  ryotunesrelease `Client` fields `installedVersion/inspect/install/vercmp` (`ryotunesrelease/client.go:57-61`).
+
+The rest bypass the funnel with direct `exec.Command("pacman", ...)` / `sys.RunOut("pacman", ...)`: e.g.
+`update.go:494,1076,1676`, `ryokuset.go:92-96,248`, `doctor.go:1073,1114,1158,3787`,
+`reconcile_quickshell.go:75,150,158`, `reconcile_ryotunes.go:66`, `wm.go:288-305,439,523,530`,
+`ryoku/wm/reclaim.go:205-292`.
+
+### Proposed boundary: one file of package-manager primitives in `internal/sys`
+
+Add `internal/sys/pkg.go` and route every package-manager exec through it. No Go interface is needed with
+one backend. If the human wants one codebase for both Arch and Debian (Q-1), split it into
+`pkg_pacman.go` / `pkg_apt.go` selected by a build tag (`//go:build debian`) that `debian/rules` passes
+(`go build -tags debian`). That is compile-time selection: the PKGBUILD and `debian/rules` each build their
+own variant.
+
+| Primitive | Replaces (cites) | Debian implementation |
+|---|---|---|
+| `PkgInstalled(name) bool` | `sys.go:47-49` | `dpkg-query -W -f='${db:Status-Abbrev}' name` ∈ {`ii `, `hi `} |
+| `PkgVersion(name) string` | `sys.go:58-68`, `ryokuset.go:138`, `ryotunesrelease/client.go:149-160` | `dpkg-query -W -f='${Version}'` after the status check |
+| `InstalledSet() (map[string]string, error)` | `ryokuset.go:96`, `manifest.go:301`, `reconcile_multilib.go:66`, `wm.go:530` | `dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\t${Version}\n'` |
+| `ManualSet() (map[string]bool, error)` | `manifest.go:302` | `apt-mark showmanual` |
+| `IsAuto(name) bool` / `MarkManual(names...) error` | `reconcile_shipped_apps.go:71-87` | `apt-mark showauto <n>` / `sudo apt-mark manual` |
+| `FileOwner(path) (pkgs []string, ok bool)` | `update.go:494,1076`, `doctor.go:1158,3949`, `reconcile_quickshell.go:150`, `reconcile_ryotunes.go:66` | `dpkg-query -S path`, skip `diversion by` lines, split `a, b` |
+| `RepoServed() (map[string]string, error)` (name → version) | `ryokuset.go:92,113,143`, `update.go:1676`, `wm.go:523` | `apt-get indextargets --format '$(FILENAME)' 'Created-By: Packages' 'Origin: <Ryoku>'` + `/usr/lib/apt/apt-helper cat-file` + deb822 parse |
+| `CompareVersions(a, b) int` | `ryokuset.go:180-190`, `ryotunesrelease/client.go:290-299` | `dpkg --compare-versions a lt b` / `gt b` exit codes, or a pure-Go deb-version(7) port (avoids two execs per name) |
+| `Refresh(sourceOnly bool) error` | `ryokuset.go:213-219`, `bootguard.go:165`, `doctor.go:1085`, `reconcile_multilib.go:56` | `sudo apt-get update --error-on=any` (sourceOnly adds the `Dir::Etc::SourceList`/`SourceParts=-`/`List-Cleanup=0` options) |
+| `InstallArgs(targets []string, remove []string) []string` | `ryokuset.go:233-237`, `update.go:524-535`, `bootguard.go:172-173`, `doctor.go:1114`, `reconcile_shipped_apps.go:79`, `reconcile_manifest.go:50`, `wm.go:295` | `sudo env DEBIAN_FRONTEND=noninteractive RYOKU_MANAGED_UPDATE=1 apt-get install -y --allow-downgrades -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold <p>=<v>... <r>-...` |
+| `FullUpgradeArgs() []string` | `update.go:524-527` | `sudo env DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade` |
+| `Upgradable() ([]Item, error)` | `ryokuset.go:243-261`, `update.go:1701-1720` | `LC_ALL=C apt-get -s -o Debug::NoLocking=1 full-upgrade` (`Inst` lines), optionally against a private lists dir (§1.2) |
+| `Autoremovable() []string` | `doctor.go:3787`, `report.go:105` | `LC_ALL=C apt-get -s autoremove` (`Remv` lines) |
+| `Audit() string` | `doctor.go:826-840`, `update.go:1104-1114`, `report.go:106` | `dpkg --audit` |
+| `RemoveArgs(purge bool, names...)` | `update.go:461`, `wm.go:300,439`, `reconcile_hardware.go:217,225` | `sudo apt-get remove\|purge -y [--autoremove]` |
+| `InspectPackageFile(path) (name, ver, arch)` | `ryotunesrelease/client.go:164-194` | `dpkg-deb -f path Package Version Architecture` |
+
+### File-by-file changes
+
+| File | Change |
+|---|---|
+| `internal/sys/sys.go` | move `PkgInstalled`, `InstalledVersion` into `pkg.go` |
+| `internal/sys/release.go` | `PacmanConf` → `SourcesFile = "/etc/apt/sources.list.d/ryoku.sources"`; `RyokuServer` → deb822 reader returning URIs + Suites; `ChannelServer`/`ChannelOfServer` (`55-90`) map channel ↔ URIs/Suites (§8 I-12); `SetPackagedChannel` writes the whole deb822 file; `DropRyokuSyncDB`/`PacmanSyncDir` → `rm /var/lib/apt/lists/<mangled Ryoku URI>*` (or delete: channel moves change URIs/Suites, so apt fetches new list files); `ReleaseFile` → see §8 I-14 |
+| `internal/updater/ryokuset.go` | rewrite on the primitives; `ryokuRepo` qualifier → `<name>=<version>` targets; `refreshDBArgs(force)` → `Refresh`; `systemLanePending` → `Upgradable` |
+| `internal/updater/update.go` | delete `clearStalePacmanLock`, `ryokuOverwriteGlob`, `unownedFiles`, the strays branch of `healPackageUpgrade`, `channelSwitchArgs`, `runAURUpgrade`, `aurUpdates`, the `aur` step; fix the double `healPackageUpgrade` (`215,220`); `dbRejection` needles → apt messages; `latestAvailable`/`pendingUpdates` → primitives; `prowlPacmanOwned` → `FileOwner`; `gatherSnapHelpers`/`offerSnapperHelpers`/`restoreGuide`/`snapshotsInBootMenu` per §6; user strings naming pacman/Arch (`409,1259,1508`) and i18n catalogs |
+| `internal/updater/upgradelog.go` | replace pacman grammar (`36-39,147-163,514-588`) with `APT::Status-Fd` parsing (`pmstatus`/`dlstatus`/`pmerror`/`pmconffile`), or with apt text under `LC_ALL=C`; `conflictPath` → delete (unowned files do not conflict under dpkg) |
+| `internal/updater/manifest.go` | `PacmanInstalled/Explicit` → `InstalledSet`/`ManualSet`; drop the AUR routing (§5) |
+| `internal/updater/bootguard.go` | `revertRelease` per §1.6; `pointBootMenuAtSnapshot` per the boot-chain choice |
+| `internal/updater/release.go` | `Track`: "no [ryoku] repo" checks read `SourcesFile`; messages naming pacman (`172`) |
+| `internal/updater/version.go` | strip a leading `N:` epoch before the `-` split (`98`) |
+| `internal/updater/commits.go` | default slug (`33`) → the port's repo |
+| `internal/updater/ryotunes.go`, `internal/ryotunesrelease/*` | §1.14 variant (a) or (b) |
+| `internal/doctor/*` | §3 rows marked Yes/Partial; `hasPacman` → dpkg gate; `writeRootFile` must not be used on Debian alternatives symlinks (`/etc/modprobe.d/nvidia.conf`, `/usr/share/icons/default/index.theme`) |
+| `internal/doctor/report.go` | §1.12 |
+| `internal/keyboard`, `internal/keyring`, `internal/securitykey` | §1.15 |
+| `wm.go`, `ryoku/wm/reclaim.go` (vendored copy under `ryoku/cli/vendor/ryoku-wm/`) | §1.15 `wm use` row |
+| `track.go`, `recovery.go`, `internal/doctor/doctor.go:36`, `internal/sys/repo.go:44-46`, `internal/doctor/reconcile_channel.go:78,117` | URLs and clone name `ryoku-arch` → the port's repo |
+| `cmd/ryoku-manifest`, `internal/ryokumanifest/generate.go` | read `debian/control` `Package:` instead of PKGBUILD `pkgname=` (`generate.go:65-82`); Debian package lists; `OptIn`/`Apps` names mapped (§3a ShippedApps row) |
+| `bin/ryoku-recovery`, `bin/ryoku-track`, `system/extras/ryoku-pkg-*` | apt rewrites (§1.13, §1.15) |
+| `bin/ryoku-dev-verify-delivery` | add the Debian packaging files to `sources` (`:25`) |
+
+### Go tests that must change
+
+| Test | Encodes | Change |
+|---|---|---|
+| `internal/updater/update_test.go:162-233` (`TestRyokuInstallArgsStayInTheRyokuLane`) | `pacman -S`, `--overwrite` glob coverage, `-Sy/-Syy`, `-Syu` | assert the apt argv: `install`, `--allow-downgrades`, `<p>=<v>`, no `upgrade`/`full-upgrade` in the Ryoku lane; drop the overwrite-glob block |
+| `update_test.go:348-365` (`TestDbRejection`), `:367-385` (`TestDropSplitMetasNotServed`), `:19-51` (`TestWantedSnapperHelpers`), `:235-253` (`TestProwlDecide` comment only) | pacman error strings, `-Rdd`, snap-pac/limine gating | apt error strings; `<meta>-` argv; helper set per §6 |
+| `internal/updater/ryokuset_test.go:16-72,74-144,146-154` | `pacman -Slq/-Qq`, `-Qi/-Si` `Version :` output, `vercmp` seam | dpkg-query rows, Packages-index stanzas, dpkg version ordering |
+| `internal/updater/upgradelog_test.go:1-177` | a real `pacman -Syu` transcript (`:11-40`), `TestConflictPath` (`:122-140`) | an apt transcript or Status-Fd lines; delete the conflict test |
+| `internal/updater/track_test.go:11-29,59-93` | `pacman.conf` fixture with `[ryoku]` stanza | a `ryoku.sources` deb822 fixture |
+| `internal/sys/release_test.go:9-57` | Server-line round trip, pacman.conf parsing | URIs/Suites mapping, deb822 parsing |
+| `internal/updater/channel_test.go:654-666` (`TestRyokuChannelPrefersPackagedOverStaleEnv`) | packaged channel read from pacman.conf | from `ryoku.sources` |
+| `internal/updater/manifest_test.go:53-63` (`TestPlanManifestRoutesAURLaneBestEffort`) | AUR lane | delete or rewrite after §5 |
+| `internal/updater/bootguard_test.go:6-41` | Limine snapshot tree | keep under (a); grub-btrfs parsing under (b) |
+| `internal/updater/runstate_test.go`, `materialize_test.go` (except the chromium-flags expectation's meaning), `snapshots_test.go`, `commits_test.go`, `update_guards_test.go`, `internal/sys/repo_test.go` | — | none (snapper CSV and git logic are distro-neutral) |
+| `internal/doctor/reconcile_pacman_test.go`, `doctor_pacnew_test.go`, `reconcile_multilib_test.go` | ILoveCandy, `.pacnew` classification, `[multilib]` | delete or rewrite with the reconcilers (§3a) |
+| `internal/doctor/reconcile_shipped_apps_test.go`, `reconcile_manifest`-related cases in `doctor_test.go` | `hasPacman`, `pacman -Qdq` seams | dpkg seams |
+| `doctor_test.go` Limine/pkgbase fixtures, `reconcile_limine_images_test.go`, `reconcile_limine_entries_test.go`, `reconcile_initramfs_test.go`, `reconcile_alongside_test.go`, `reconcile_boot_rw_test.go` | §3d | §3d |
+| `doctor_nvidia_test.go`, `reconcile_quickshell_test.go`, `reconcile_wm_plugins_test.go:76`, `doctor_test.go:733-748` | §3c | §3c |
+| `reconcile_portal_session_test.go:73-163`, `reconcile_keyring_test.go:26-83`, `internal/keyring/*_test.go`, `internal/keyboard/keyboard_test.go:136-226` | fake `pacman`, Arch sddm PAM, vconsole/mkinitcpio | §3b, §1.15 |
+| `internal/ryotunesrelease/ryotunesrelease_test.go:80-95,129-160,202-287,324-376,457,541` | pacman vercmp emulation, `.pkg.tar.zst`, `x86_64`, `-Qip` metadata | §1.14 |
+| `internal/securitykey/securitykey_test.go:165-167,213,284-292`, `ryoku/wm/reclaim_test.go:14-17,251-259` | Arch PAM fixtures, pacman `-Rs --print` plan | §1.15 |
+
+---
+
+## 8. Issues / risks
+
+- **I-1 Version ordering.** `vercmp` (rpmvercmp) and dpkg differ: pacman ranks a letter segment below
+  end-of-string (`1.0rc1 < 1.0`); dpkg ranks it above (`1.0rc1 > 1.0`) and uses `~` for pre-releases.
+  Ryoku's own `<core>.r<count>.g<sha>-<rel>` (`bin/ryoku-release-version:30-43`) sorts the same under both,
+  because `r<count>` increases monotonically. Upstream versions the port repackages (e.g. zen `1.23.2b`)
+  must be mapped to Debian form, e.g. `1.23.2~b`. Epochs: ryotunes' `1:` survives
+  (`ryotunesrelease.go:42-52`); `version.go:98` breaks on any epoch.
+- **I-2 Partial upgrades.** The Arch Ryoku lane (`pacman -Sy` then `pacman -S <targets>` without `-u`,
+  `ryokuset.go:213-237`) is a partial upgrade, which Arch does not support. Debian supports one. Expected
+  apt behaviour: installing a newer Ryoku package pulls the newer Debian dependencies it needs in the
+  same transaction. It fails if such a dependency is held, pinned below the needed version, or only in
+  backports (NotAutomatic, priority 100).
+- **I-3 Held packages.** With `apt-mark hold`, `apt-get install -y` aborts ("Held packages were changed and
+  -y was used without --allow-change-held-packages"). pacman with an explicit target on `IgnorePkg` asks
+  and `--noconfirm` answers yes. Prior art on this machine holds the 20 Hyprland stack .debs
+  (`~/.claude/machine-state.md`, Debian13-Hyprland 2026-07-11) to stop Debian's libxkbcommon evicting
+  them. If the Ryoku repo serves held names, the update must pass `--allow-change-held-packages`, or skip
+  and report them (Q-7).
+- **I-4 Backports.** Hyprland is in trixie only via trixie-backports (0.55.2+ds-1~bpo13+1), and quickshell
+  too (0.3.0-1~bpo13+1). On trixie, Ryoku debs depending on bpo versions need `-t trixie-backports`, or a
+  pin for those names. Otherwise apt reports unmet dependencies (backports have priority 100 and are not
+  candidates).
+- **I-5 Exit codes.** `apt-get update` exits 0 when fetches fail (only `W:`) unless `--error-on=any`. The
+  boot guard's "retry next boot" (`bootguard.go:165-171`) and the update's refresh failure log
+  (`update.go:175-177`) depend on a non-zero exit.
+- **I-6 dpkg file semantics vs pacman's `--overwrite`.**
+  - dpkg replaces a file no package owns without complaint, so `ryokuOverwriteGlob`, `unownedFiles`,
+    `healPackageUpgrade`'s strays branch and `reconcileConflictingRyokuFiles` are unnecessary for non-conffiles.
+  - A file owned by another package fails with `trying to overwrite '<path>', which is also in package
+    <p>`. The fix is `Replaces:`/`Breaks:` in packaging; `--force-overwrite` is the CLI escape.
+  - Every file under `/etc` in a .deb is a conffile (dh_installdeb). An unowned pre-seeded copy that
+    differs makes dpkg prompt. With `--force-confdef --force-confold` it keeps the seed and writes
+    `.dpkg-dist`, which reconcilePacnew's Debian rewrite must find.
+  - Non-interactive runs also need `DEBIAN_FRONTEND=noninteractive` (debconf). On Ubuntu, `needrestart`
+    (installed by default) prompts unless `NEEDRESTART_MODE=a` or `NEEDRESTART_SUSPEND=1`.
+    `apt-listchanges` pages news on a TTY unless `APT_LISTCHANGES_FRONTEND=none`.
+- **I-7 Output scraping.** The curated view and conflict collection parse pacman's English text
+  (`upgradelog.go:514-552`). apt and dpkg messages are translated; use `LC_ALL=C` or `-o APT::Status-Fd=<fd>`.
+  The Hub reads only the run-state JSON (`runstate.go`), so it is unaffected.
+- **I-8 Locks.** There is no stale-lock equivalent: dpkg/apt locks are `fcntl` locks and the lock files must
+  never be deleted (`update.go:1104-1114` and `doctor.go:826-840` have no Debian port). The crash residue to
+  heal is an interrupted dpkg (`dpkg --audit`, `dpkg --configure -a`) and broken dependencies
+  (`apt-get check`, `apt-get -f install`).
+- **I-9 The delivery contract's "main fast-forward".** Three sources disagree:
+  - `AGENTS.md:64-71` (rule 8) says "work reaches users only once `main` fast-forwards".
+  - `bin/ryoku-dev-verify-delivery:7-8,86-96` says "the [ryoku] repo publishes on push to main".
+  - The code and docs say otherwise: `.github/workflows/publish-repo.yml:13-19,24-30` triggers on push to
+    `unstable-dev` (testing) and on `v*` tags (stable); a push to `main` "publishes nothing".
+    `docs/updates.md:307-316` agrees.
+  For the port, the human's CI decides which branch/tag feeds which apt suite. The verify-delivery
+  publish-lag check (`:86-96`, which compares `origin/main` with `origin/unstable-dev`) and the AGENTS.md
+  rule need rewording to match whatever trigger the port's CI uses.
+- **I-10 Delivery gate scope.** `ryoku-dev-verify-delivery` counts a config as delivered when a PKGBUILD,
+  `installation/backend/lib/deploy.sh` or `ryoku/shell/deploy.sh` names it (`:25-38`). It also requires
+  `usr/share/ryoku/i18n` in one of them (`:78-83`). The port's `debian/*.install` / `debian/rules` must be
+  added to `sources`, or every Debian-only delivery path reads as an orphan.
+- **I-11 Two lanes on apt.** The user's `sudo apt full-upgrade` moves the Ryoku packages too whenever the
+  Ryoku repo serves newer versions. The same holds for `pacman -Syu` on Arch, so the contract is unchanged.
+  `unattended-upgrades` (2.12 trixie, if installed) only touches origins in
+  `Unattended-Upgrade::Origins-Pattern`; the Ryoku origin is excluded unless added.
+- **I-12 Channel handling on apt.** Today the channel is the `Server` URL path: `x86_64/` (stable, a byte
+  copy of the newest release), `channels/testing/x86_64/`, `releases/<tag>/x86_64/`
+  (`internal/sys/release.go:15-28,55-90`). Two apt layouts map onto it:
+  - (A) **flat repo per directory.** `URIs: <base>/` (or `<base>/channels/testing/`,
+    `<base>/releases/<tag>/`) and `Suites: ./`, with no `Components:` (sources.list(5) exact-path form).
+    This mirrors today's layout 1:1, keeps `release.json`/`manifest.json` beside the index, and keeps
+    `ChannelOfServer` a URL parse.
+  - (B) **one pool with `dists/<suite>`** (reprepro 5.4.6 / aptly 1.6.x in all suites). The channel is
+    the `Suites:` value (`stable`, `testing`, `v0.75.5-beta.20`), the pool dedupes .debs across frozen
+    releases, and `ChannelOfServer` parses Suites.
+
+  Either way:
+  - **The stable pointer cannot be a byte copy of a release's `Release`/`InRelease`.** apt refuses a
+    repository whose `Codename`/`Origin`/`Label` changed until confirmed (`--allow-releaseinfo-change`,
+    apt-secure(8)). The stable index must keep constant `Origin`/`Label`/`Codename`, or the CLI must pass
+    `--allow-releaseinfo-change-codename`.
+  - **A channel move is a rewrite of `ryoku.sources` plus `apt-get update`.** List files are named after
+    the URI, so pacman's stale-db/signature wedge (`sys/release.go:163-186`) does not occur.
+  - **Moving down needs `--allow-downgrades` with explicit `<p>=<v>` targets.** The alternative is
+    `Pin-Priority: 1001` for the Ryoku origin in `/etc/apt/preferences.d/`, which makes every apt run
+    (the user's lane included) prefer Ryoku's versions, downgrades included (Q-3).
+  - **Suite × base matrix.** One Arch x86_64 build serves Arch and CachyOS (`docs/updates.md:293-297`).
+    Debian .debs built against trixie libraries are not installable on forky or resolute (different
+    `libqt6*`/`libc6` ABIs), so the repo needs a base-codename dimension (e.g. `Suites: stable-trixie`).
+    `ChannelServer`/`ChannelOfServer`/`ChannelURL` must carry it.
+  - **Keyring.** `Signed-By: /usr/share/keyrings/ryoku-archive-keyring.pgp` replaces `SigLevel = Required`
+    + `pacman-key --populate`. apt 3.0 verifies with `sqv`, which rejects SHA-1 and DSA. Ryoku's current
+    release key is Ed25519 (`keys/ryoku-release-key.pub.asc`, algo 22).
+- **I-13 `hasPacman` gate.** `sys.Has("pacman")` (`reconcile_shipped_apps.go:88`) is the "is this a
+  package box" test for three reconcilers. Debian's `pacman-package-manager` (7.0.0-1+b1 trixie) installs
+  `/usr/bin/pacman`. Without pacman they silently report ok; with that package they run pacman against an
+  empty Arch database.
+- **I-14 `/etc/ryoku-release` becomes a conffile.** `ryoku-desktop` writes it per build
+  (`PKGBUILD:259-266`). Under `/etc` in a .deb, dh_installdeb marks it a conffile:
+  - a user-deleted copy is not restored on upgrade;
+  - it survives `remove` (until purge);
+  - a local edit makes every upgrade prompt.
+
+  The CLI reads it via `sys.ReleaseFile` (`internal/sys/release.go:41`). Shipping it as
+  `/usr/lib/ryoku/release` (and pointing `ReleaseFile` there) keeps it package-owned and always current.
+  The same applies to `/etc/systemd/logind.conf.d/10-ryoku-lid.conf` (I-6).
+- **I-15 "explicit" vs "manual".** `ryoku verify`'s `Extra` list is `pacman -Qqe` minus manifest names
+  (`manifest.go:275-297`). Debian's installer, debootstrap and tasksel mark the base as manual, so
+  `apt-mark showmanual` reports hundreds of base packages as "added by you". The manifest's base lane
+  must name the Debian base set, or `Verify` must subtract `priority: required/important` packages.
+- **I-16 Kernel lane on Debian.** Debian kernels arrive through the `linux-image-amd64` meta and
+  trixie-security in the user's lane, as versioned packages, with several kept installed
+  (`/etc/apt/apt.conf.d/01autoremove` `VersionedKernelPackages`). The Ryoku lane still never moves them.
+  `reportSystemLane`'s "kernel included" text (`update.go:409`) stays accurate.
+- **I-17 Status freshness.** `checkupdates` syncs a private database on every status poll
+  (`update.go:1701-1711`). The apt equivalents read lists that are only as fresh as the last
+  `apt-get update`. The shell daemon polls `ryoku status --json` on a cadence (`ryoku/shell/ipc/updates.go:15,71`),
+  so freshness needs either the private-tree refresh or a periodic system refresh (Q-9).
+- **I-18 Bugs and dead code found (pre-existing, distro-neutral):**
+  - `healPackageUpgrade` is called twice (`update.go:215,220`);
+  - an unreachable error check (`update.go:192-196`);
+  - `channelSwitchArgs` has no caller (`update.go:532-535`);
+  - the `readFileSafe` guards never fire (`reconcile_limine.go:680,786`; `doctor.go:2537,2721`);
+  - `ryoku-pkg-add` sysupgrades inside the Ryoku lane (`system/extras/ryoku-pkg-add:18` via
+    `update.go:1181-1185`).
+- **I-19 Docs vs code:**
+  - `docs/cli.md:91` (`snapshots` runs `sudo snapper list`) vs `update.go:1360-1370` (unprivileged
+    first);
+  - `docs/cli.md:72-73` (status uses checkupdates only) vs `update.go:1724-1726` (+ `yay -Qua`);
+  - `docs/cli.md:52-55` (fast-forward only on the channel branch) vs `channel.go:163-212` (any clean
+    branch);
+  - `docs/cli.md:81` (no id lists snapshots) vs `update.go:1257-1267` (releases + snapshots);
+  - `main.go:13,102` ("reload Hyprland") vs `ryoku/shell/ipc/daemon.go:1433-1488` (Quickshell only);
+  - `system/packages/aur.packages:54-69` vs `reconcileManifest` (§5).
+- **I-20 `/usr/sbin` is not on a Debian user's PATH.** Arch merged sbin into bin. Unprivileged
+  `exec.LookPath` of `dmsetup` (`doctor.go:942`) fails on Debian, so `reconcileStaleCryptMapper` always
+  reports "no crypt mappers present". Root and sudo paths (`runuser`, `cryptsetup`, `swapon`) are
+  unaffected (sudo's `secure_path` and root's PATH include sbin).
+- **I-21 Ubuntu-specific.**
+  - Phased updates mean `apt-get -s full-upgrade` can list packages `apt` will not install yet
+    (`APT::Get::Always-Include-Phased-Updates`), so the system-lane count can over-report.
+  - Firefox and Chromium are snaps.
+  - `sudo-rs` exists (0.2.13 in resolute) as an alternative `sudo`; `sudo -v`/`-n` are used by
+    `update.go:315,337`.
+
+## Questions for the human
+
+- **Q-1 One codebase or a fork?**
+  - (a) Fork: replace pacman with apt in place. This is the smallest diff, but the Debian tree diverges
+    from upstream Ryoku on every package-touching file.
+  - (b) Dual: `internal/sys/pkg_{pacman,apt}.go` behind a `debian` build tag, plus distro-specific
+    reconcilers behind the same tag. The upstream-merge surface is smaller, but every Arch-specific
+    reconciler needs a tagged twin or a skip.
+- **Q-2 Boot chain: Limine or GRUB?**
+  - (a) Limine: package limine, limine-entry-tool and limine-snapper-sync (GraalVM native builds per
+    suite) and write Debian kernel hooks; the rollback UX stays identical; Secure Boot via the Debian shim
+    chain is lost.
+  - (b) GRUB + grub-btrfs: package one shell project; Secure Boot works with shim-signed and
+    grub-efi-amd64-signed; a restore helper must be written or the subvolume layout changed; the boot
+    guard, `restoreGuide` and five reconcilers are rewritten.
+- **Q-3 Repo layout and downgrade mechanism.**
+  - Layout: (A) flat per-directory repos (1:1 with today's URLs) or (B) a reprepro/aptly pool with suites.
+  - Downgrades: explicit `<p>=<v> --allow-downgrades` (only `ryoku update` moves the set down) or an
+    origin pin at 1001 (every apt run prefers Ryoku's versions, downgrades included).
+- **Q-4 Ryotunes.** (a) Keep a separate GitHub-release channel with a `.deb` asset contract the port
+  publishes itself (the upstream `ryoku-dev/ryotunes` publishes only `.pkg.tar.zst`). (b) Fold it into the
+  apt repo and delete the external channel code.
+- **Q-5 Snapshot pair per update.** Options A–D in §6: edit `/etc/default/snapper`, divert `80snapper`, use
+  80snapper's pair only, or accept four snapshots per update.
+- **Q-6 `snapper-boot.timer`.** Debian enables it, giving one `boot` snapshot per boot that counts against
+  `NUMBER_LIMIT="10"`. Disable it in `reconcileSnapperCleanup`, or keep it.
+- **Q-7 Held packages.** Pass `--allow-change-held-packages` in the Ryoku lane (matches pacman's explicit-
+  target behaviour), or skip held names and report them.
+- **Q-8 Cadence of formerly-AUR apps.** Ship zen/localsend/voxtype in the frozen release (they update
+  only on a tag), or in a separate rolling suite outside the release freeze (another channel dimension
+  for the CLI).
+- **Q-9 Status freshness.** A private apt tree refreshed by `ryoku status` (no root; network on each poll,
+  bounded like `checkupdates` at 120 s, `update.go:1709`), or `APT::Periodic::Update-Package-Lists "1"`
+  (apt-daily.timer twice a day, root).
+
+## Cross-cutting findings
+
+- `/usr/share/ryoku/config` (materialize base), `/usr/share/ryoku/i18n` (`main.go:42`,
+  `ryoku-desktop/PKGBUILD:335,543-548`), `/usr/share/ryoku/lockscreen/*`, `/usr/share/ryoku/ryodecors`,
+  `/usr/share/ryoku/reload-cover` and `/usr/bin/{ryoku,ryoku-shell,ryoku-hub,ryostore,ryoku-plugins-place,ryoku-wm-<name>,ryoku-power-cutover,ryoku-clamshell,ryoku-idle,ryogami}`
+  are hard-coded consumers. The Debian packages must install exactly these paths (`update.go:248,1874-1879`
+  prefers `/usr/bin`).
+- The `ryoku status --json` schema (`update.go:1530-1556`) is a contract for `ryoku/shell/ipc/updates.go:71`
+  and the Hub (`Singletons/Updates.qml`). The run-state JSON (`runstate.go`) is a contract for the update
+  island and `UpdatesPage.qml`.
+- The Hub hard-codes "sudo pacman -Syu" (`ryoku/hub/quickshell/pages/UpdatesPage.qml:595`). The Profile
+  plate reads `/var/log/pacman.log` for the install date (`ryoku/hub/quickshell/pages/ProfilePage.qml:47`;
+  `stat -c %W /` is tried first).
+- Installer/packaging must not seed `/etc` paths a package later owns (conffile prompt, I-6). Ship the
+  release marker outside `/etc` (I-14).
+- libalpm hooks (`94/95-ryoku-power-cutover`, the NVIDIA guard hook, limine hooks, limine-snapper-sync's
+  lock hook) all become preinst/postinst, dpkg triggers, `/etc/kernel/postinst.d` or `DPkg::Pre/Post-Invoke`
+  (§2 row 63, §3c, §6).
+- The pacman install scriptlet's `RYOKU_MANAGED_UPDATE` deferral (`ryoku-desktop.install:118-140`) exists
+  because libalpm cannot run a newly extracted hook; dpkg runs the new version's maintainer scripts, so the
+  Debian postinst can adopt sessions synchronously.
+- `tools/pkgver` earlier printed `-` for contrib/non-free packages and for names containing `+`. All rows
+  in this document were re-queried after the fixes, except the NVIDIA rows, which the hardware survey took
+  from madison directly.
+- `/usr/sbin` off the user PATH (I-20) affects every unprivileged exec of sbin tools across Ryoku (e.g.
+  `iw`, `modinfo` in other components).
+- Debian `/etc/vconsole.conf` is a symlink to `/etc/default/keyboard`, and localed's setters are denied by
+  policy (§1.15). Any component that writes keyboard layout system-wide (installer, greeter, keyboard
+  CLI) needs the console-setup route.
+
+## Debian packages this section needs
+
+apt, dpkg, apt-utils (if the repo is built with apt-ftparchive), snapper, btrfs-progs, sudo, systemd,
+systemd-ukify (Limine variant), network-manager, util-linux, procps, dbus-bin, dmsetup, cryptsetup-bin,
+plocate, git, curl, flatpak, golang-go (build), debhelper (build), lua5.4, pkexec, libpam-gnome-keyring,
+gnome-keyring, libpam-u2f, pamu2fcfg, fido2-tools, systemd-cryptsetup, xkb-data, console-setup,
+keyboard-configuration, initramfs-tools (or dracut), efibootmgr, dosfstools, grub-efi-amd64-signed,
+shim-signed, grub-common, gawk, inotify-tools (GRUB variant), libnotify-bin, rsync (limine-snapper-sync
+optional), xdg-user-dirs, xdg-utils, jq, gh, libglib2.0-bin, pulseaudio-utils, usbutils, xdg-desktop-portal,
+xdg-desktop-portal-gnome, xdg-desktop-portal-wlr, xdg-desktop-portal-hyprland, hyprpolkitagent, pipewire,
+pipewire-pulse, wireplumber, libqt6core6t64, qt6-wayland, libdrm-tests, weston, sddm, bibata-cursor-theme
+(conflicts with ryoku-cursors), brightnessctl, power-profiles-daemon, iw, wireless-regdb, pciutils, kmod,
+fprintd, libpam-fprintd, tlp (conflict check only), quickshell (trixie-backports / forky / sid), hyprland
+and hyprland-dev (trixie-backports / forky / sid / resolute), build-essential, cmake, pkg-config,
+python3-nautilus, python3-packaging, reprepro or aptly (publishing).
+
+Ryoku-built / port-built .debs this section depends on: ryoku, ryoku-desktop (+ -hyprland / -niri),
+ryoku-shell, ryoku-hub, ryoku-archive-keyring, ryotunes, prowl-agent, asusctl, qmk-hid,
+pam-fprint-grosshack, the Material Symbols font, ryoku-cursors, zen-browser, localsend, voxtype,
+phinger-cursors, catppuccin-cursors-mocha, apple-cursor, nvibrant, fonts-fraunces, and either
+limine + limine-entry-tool + limine-snapper-sync + Ryoku kernel hooks (Q-2 a) or grub-btrfs (Q-2 b).
