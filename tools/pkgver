@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Usage: tools/pkgver <debian-source-or-binary-name>...
+# One line per package: newest version in trixie, trixie-backports, forky (testing),
+# sid (unstable) and Ubuntu 26.04 (resolute, any pocket). "-" = not present.
+set -euo pipefail
+(( $# )) || { echo "usage: $0 pkg..." >&2; exit 2; }
+q=$(IFS=+; echo "$*")
+deb=$(curl -fsS "https://api.ftp-master.debian.org/madison?package=${q}&text=on" || true)
+ubu=$(curl -fsS "https://people.canonical.com/~ubuntu-archive/madison.cgi?package=${q}&a=amd64,source&text=on" || true)
+printf '%-32s %-26s %-26s %-22s %-22s %s\n' package trixie trixie-bpo forky sid resolute
+for p in "$@"; do
+  pick() { awk -F'|' -v p="$p" -v s="$2" '{gsub(/ /,"",$1);gsub(/ /,"",$2);gsub(/ /,"",$3)} $1==p && $3==s {v=$2} END{print v?v:"-"}' <<<"$1"; }
+  pickre() { awk -F'|' -v p="$p" -v s="$2" '{gsub(/ /,"",$1);gsub(/ /,"",$2);gsub(/ /,"",$3)} $1==p && $3~s {v=$2} END{print v?v:"-"}' <<<"$1"; }
+  printf '%-32s %-26s %-26s %-22s %-22s %s\n' "$p" \
+    "$(pick "$deb" stable)" "$(pick "$deb" stable-backports)" "$(pick "$deb" testing)" \
+    "$(pick "$deb" unstable)" "$(pickre "$ubu" '^resolute')"
+done
