@@ -5,9 +5,14 @@
 # (main/contrib/non-free/non-free-firmware). "-" = not present.
 set -euo pipefail
 (( $# )) || { echo "usage: $0 pkg..." >&2; exit 2; }
-q=$(IFS=+; echo "$*")
-deb=$(curl -fsS "https://api.ftp-master.debian.org/madison?package=${q}&text=on" || true)
-ubu=$(curl -fsS "https://people.canonical.com/~ubuntu-archive/madison.cgi?package=${q}&a=amd64,source&text=on" || true)
+deb= ubu=
+# Query in chunks of 15 (large batches drop rows); '+' in names must be %2B.
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i += 15)); do
+  q=$(printf '%s\n' "${args[@]:i:15}" | sed 's/+/%2B/g' | paste -sd' ' | sed 's/ /%20/g')
+  deb+=$(curl -fsS "https://api.ftp-master.debian.org/madison?package=${q}&text=on" || true)$'\n'
+  ubu+=$(curl -fsS "https://people.canonical.com/~ubuntu-archive/madison.cgi?package=${q}&a=amd64,source&text=on" || true)$'\n'
+done
 printf '%-32s %-26s %-26s %-22s %-22s %s\n' package trixie trixie-bpo forky sid resolute
 for p in "$@"; do
   pick() { awk -F'|' -v p="$p" -v s="$2" '{gsub(/ /,"",$1);gsub(/ /,"",$2);gsub(/ /,"",$3)} $1==p && ($3==s || index($3, s"/")==1) {v=$2} END{print v?v:"-"}' <<<"$1"; }
