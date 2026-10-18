@@ -1,0 +1,665 @@
+# 02 — Package map: Ryoku's Arch package sets on Debian / Ubuntu
+
+Scope: every package line in `system/packages/{base,hardware,dev,aur,cachyos}.packages`, the live-ISO set `installation/iso/packages.x86_64`, and the `depends`/`makedepends`/`optdepends` arrays of the three umbrella PKGBUILDs (`release/packages/ryoku-desktop{,-hyprland,-niri}/PKGBUILD`), at Ryoku commit `98a0368` (0.75.5-beta.20). That is **354 package lines naming 248 distinct Arch packages**; every line has a mapping row (one row per distinct name, whose *Sets* column cites every line that names it). Arch versions come from the Arch repo databases (core/extra/multilib, fetched 2026-10-17 from mirrors.kernel.org, the same data the archlinux.org JSON API serves; the API rate-limited at 429), the CachyOS repo db, the AUR RPC v5, and the `[ryoku]` PKGBUILDs. Debian/Ubuntu versions come from `api.ftp-master.debian.org/madison` and Canonical's madison (the data behind `tools/pkgver`), queried 2026-10-17 including contrib / non-free / non-free-firmware / universe / multiverse / restricted, re-checked with the fixed `tools/pkgver` for every name that printed `-`.
+
+| Component | Path | As-is on Debian | Complexity | Blocking issues |
+|---|---|---|---|---|
+| Base set | `system/packages/base.packages` | NO | High | Qt ≥ 6.9 (trixie has 6.8.2); limine + limine-entry-tool + limine-snapper-sync not packaged anywhere (GraalVM build); matugen, quickshell (resolute), blesh, fonts, waifu2x, yazi (Rust 1.99) missing; mkinitcpio/snap-pac/pacstrap are Arch mechanisms |
+| Hardware profiles | `system/packages/hardware.packages` | PARTIAL | Medium | NVIDIA: Debian tops out at 550.163 in every suite (no RTX 50); lib32-* need i386 multiarch; non-free(-firmware) components |
+| Dev toolchains | `system/packages/dev.packages` | PARTIAL | Low | Go 1.26 required (trixie 1.24); mise not packaged |
+| AUR set | `system/packages/aur.packages` | NO | Medium | no AUR: 9 of 10 entries become port-built debs (2 have upstream .debs); yay-bin has no meaning |
+| CachyOS layer | `system/packages/cachyos.packages` | NO | High | no CachyOS kernel / settings / ananicy-cpp / scx for Debian; trixie kernel has no sched_ext |
+| Live ISO set | `installation/iso/packages.x86_64` | PARTIAL | Medium | archiso hooks, reflector, pacstrap have no Debian meaning; limine, nerd font, ryoku-cursors must be port-built |
+| Umbrella packages | `release/packages/ryoku-desktop{,-hyprland,-niri}/PKGBUILD` | NO | High | Hyprland ≥ 0.56 only in forky/sid; niri + xwayland-satellite + 4 third-party Hyprland plugins/pickers not packaged; 15 Ryoku-own packages; adw-gtk3, gpk, asusctl, qmk_hid missing |
+
+Legend for the *Sets* column: `B` base.packages, `H[x]` hardware.packages section x, `D` dev.packages, `A` aur.packages, `C` cachyos.packages, `I` installation/iso/packages.x86_64, `U` ryoku-desktop/PKGBUILD, `UH` ryoku-desktop-hyprland/PKGBUILD, `UN` ryoku-desktop-niri/PKGBUILD; the number is the line; `opt` = optdepends, `make` = makedepends. Version cells: `(nff)` non-free-firmware, `(nf)` non-free, `(contrib)`, `(univ)` universe, `(multiv)` multiverse, `(restr)` restricted; `-` = not in that suite. In the version columns, a `|` name in *Debian / Ubuntu pkg(s)* means the Ubuntu column shows the Ubuntu name. Version columns show the first Debian name listed; `:i386` rows show the amd64 version of the same source.
+
+Status meanings (as assigned): SAME = same name, version adequate on at least one base; RENAMED; SPLIT = one Arch package becomes several debs (or the reverse); OLDER = exists but too old on every Debian suite; MISSING-BUILD = no adequate deb, must be built or repackaged (Ryoku-own = one of Ryoku's monorepo packages); NOT-NEEDED-ON-DEBIAN = Arch mechanism with a named Debian replacement; REPLACED-BY = Debian equivalent with behaviour differences. Where adequacy depends on the base, the status says so inline and the row is in the version-sensitive list.
+
+---
+
+### Base set (`system/packages/base.packages`)
+
+**What it does:** "The set every machine gets, installed by `pacstrap`" (system/packages/README.md:9-15); the file header says the installer "pacstraps this whole set" (base.packages:1-3). 145 package lines.
+
+**Arch couplings:**
+- `installation/backend/lib/pacstrap.sh:42-47` reads the file (grep minus comments) into the pacstrap list; `:98` `ryoku_ensure_keyring` runs `pacman-key --init/--populate archlinux` (`:24-39`); `:130` `pacstrap -K /mnt --noconfirm`; `:169-175` online retry `--needed --overwrite '*'`; `:103` `genfstab -U`.
+- `pacstrap.sh:81-90` appends `broadcom-wl-dkms` when `lspci -d 14e4:` matches (Debian: `broadcom-sta-dkms`, non-free; trixie 6.30.223.271-26).
+- `installation/backend/lib/preflight.sh:74` reads base.packages for the pre-install check; `bin/ryoku-recovery:127` reinstalls it with pacman; `installation/tests/iso-preflight.sh:108` lints every `*.packages`.
+- `installation/iso/offline-repo.sh:47-55,464-466` resolves base + dev + every hardware section (+ cachyos on that variant) into the baked `[offline]` file:// repo.
+- **Runtime consumer:** `ryoku/cli/internal/ryokumanifest/manifest.go:28-34` + `generate.go:14,117-120` embed base/dev/hardware/aur into the release manifest that `ryoku doctor` converges every box to (`reconcile_manifest.go`), so these Arch names are also read by the CLI at runtime, through pacman (`ryoku/cli/internal/sys/sys.go`).
+- Hardcoded Arch file paths of packages in this set: `ryoku/apps/zsh/ryoku.zsh:45-50` (`/usr/share/zsh/plugins/...`), `ryoku/apps/bash/ryoku.bash:18-19` (`/usr/share/blesh/ble.sh`), `ryoku/hub/backend/hwcaps.go:574-585` (OVMF paths).
+
+**Dependencies:** (rows for names whose first line is in this set; columns per the task)
+
+| Arch pkg (Arch ver) | Sets | Provides in Ryoku (cite) | Debian / Ubuntu pkg(s) | trixie | trixie-bpo | forky | sid | resolute | Status: min version / why |
+|---|---|---|---|---|---|---|---|---|---|
+| `base` (core 3-3) | B:6 · I:9 | minimal Arch system meta (B:6 "Core system") | systemd systemd-sysv iproute2 iputils-ping procps psmisc file pciutils gettext-base xz-utils bzip2 | 257.13-1~deb13u1 | - | 262-1 | 262.1-1 | 259.5-0ubuntu3.4 | **NOT-NEEDED-ON-DEBIAN** Arch `base` = filesystem glibc bash coreutils … pacman archlinux-keyring systemd systemd-sysvcompat iputils iproute2 (core.db). Debian mechanism: mmdebstrap/debootstrap `--variant=minbase` (Essential+Required) plus the listed non-Required members; pacman/archlinux-keyring -> apt + debian-archive-keyring (Ubuntu: ubuntu-keyring). |
+| `base-devel` (core 1-2) | B:7 | compiler toolchain for DKMS and on-box AUR builds (B:7; aur.sh:73) | build-essential autoconf automake bison flex libtool m4 patch pkgconf texinfo fakeroot groff-base debugedit | 12.12 | - | 12.12+b1 | 12.12+b1 | 12.12ubuntu2.26.04.2 | **REPLACED-BY** build-essential covers gcc/g++/make/libc-dev/dpkg-dev; the AUR/makepkg consumer (aur.sh:69-100) has no Debian counterpart, DKMS only needs build-essential + headers. |
+| `rust` (extra 1:1.99.1-1) | B:11 | Rust toolchain on every box: "depth cutout worker and several AUR dependencies" (B:8-11) | rustc cargo | 1.85.1+dfsg1-1+deb13u1 | 1.96.1+dfsg1-2~bpo13+1 | 1.96.1+dfsg1-2 | 1.97.1+dfsg1-1 | 1.93.1ubuntu1 | **SPLIT** No *.rs/Cargo.toml is tracked at the pinned commit (git ls-files), so the stated in-repo consumer does not exist in source. Debian rustc 1.85 (trixie) / 1.96 (bpo, forky) / 1.97 (sid) / 1.93 (resolute) vs Arch 1.99: current yazi needs 1.99, so builds of current upstreams need rustup on the build host. |
+| `linux` (core 7.2.11.arch1-1) | B:12 · I:10 | stock kernel; plain variant boots it (B:12; bootloader.sh:163 `kver=linux`) | linux-image-amd64 (Debian), linux-image-generic (Ubuntu) | 6.12.107-1 | 7.2.6-1~bpo13+1 | 7.2.11-1 | 7.2.11-1 | 7.0.0-39.39 | **RENAMED** bootloader.sh derives the kernel from the Arch pkgbase name `linux` (vmlinuz-linux); Debian installs /boot/vmlinuz-<version>. trixie 6.12 has no sched_ext (host /boot/config: `# CONFIG_SCHED_CLASS_EXT is not set`); sid 7.2 has it (debian/config/config:6318). |
+| `linux-firmware` (core 20260916-1) | B:13 · I:11 | device firmware incl. BT adapters (B:13; B:224-229) | firmware-linux firmware-linux-free firmware-linux-nonfree firmware-misc-nonfree firmware-amd-graphics firmware-intel-graphics firmware-intel-misc firmware-intel-sound firmware-sof-signed firmware-realtek firmware-atheros firmware-brcm80211 firmware-iwlwifi firmware-mediatek firmware-cirrus firmware-ti-connectivity firmware-nvidia-graphics (Debian); linux-firmware (Ubuntu) | 20250410-2 (nff) | 20260916-1~bpo13+1 (nff) | 20260916-1 (nff) | 20260916-1 (nff) | 20260319.git217ca6e4.1ubuntu | **SPLIT** Arch linux-firmware is a meta over 12 linux-firmware-* splits (core.db). Debian needs the non-free-firmware component; trixie 20250410, trixie-bpo/forky/sid 20260916 (Arch 20260916). Ubuntu ships one monolithic linux-firmware. |
+| `linux-headers` (core 7.2.11.arch1-1) | B:20 · U:207 | headers for DKMS (xpadneo, broadcom-wl) (B:14-20; U:207) | linux-headers-amd64 (Debian), linux-headers-generic (Ubuntu) | 6.12.107-1 | 7.2.6-1~bpo13+1 | 7.2.11-1 | 7.2.11-1 | 7.0.0-39.39 | **RENAMED** nvidia.sh builds header names as "${pkgbase}-headers" (nvidia.sh:176); Debian flavour metapackage is linux-headers-amd64. |
+| `dkms` (extra 3.4.4-1) | B:21 · U:208 | out-of-tree module builds (B:21; U:208) | dkms | 3.2.2-1~deb13u1 | - | 3.2.2-1 | 3.2.2-1 | 3.2.2-1ubuntu1 | **SAME** U:204-206 relies on dkms *alpm hooks*; Debian dkms rebuilds via /etc/kernel/header_postinst.d + postinst.d instead. Debian 3.2.2 vs Arch 3.4.4. |
+| `mkinitcpio` (core 42.2-1) | B:22 · I:12 | initramfs builder; Ryoku writes HOOKS incl. plymouth + custom ryoku-gpu-trim (chroot.sh:145) | initramfs-tools or dracut | 0.148.4 | - | 0.151 | 0.151 | 0.151ubuntu1 | **NOT-NEEDED-ON-DEBIAN** Debian default initramfs-tools (0.148 trixie); dracut 106 (trixie) / 112 (forky). The custom ryoku-gpu-trim hook, the mkinitcpio microcode hook (H:36-39) and limine-mkinitcpio-hook all need initramfs-tools/dracut rewrites. |
+| `sudo` (core 1.9.17.p2-6) | B:23 · I:72 | privilege escalation | sudo | 1.9.16p2-3+deb13u2 | - | 1.9.17p2-9 | 1.9.17p2-9 | 1.9.17p2-1ubuntu3.2 | **SAME** Arch admin group is `wheel`; Debian's sudoers grants group `sudo`. |
+| `btrfs-progs` (core 7.1-1) | B:26 · I:27 | btrfs root + subvolumes (B:26) | btrfs-progs | 6.14-1 | 7.1-1~bpo13+1 | 7.1-1 | 7.1-1 | 6.17.1-1build1 | **SAME** trixie 6.14, bpo 7.1. |
+| `cryptsetup` (core 2.8.8-1) | B:27 · I:29 | LUKS for RYOKU_ENCRYPT (B:27) | cryptsetup cryptsetup-initramfs | 2:2.7.5-2 | - | 2:2.8.8-1 | 2:2.8.8-1 | 2:2.8.4-1ubuntu4 | **SPLIT** initramfs unlock is cryptsetup-initramfs (initramfs-tools) or dracut's crypt module, not the mkinitcpio encrypt/sd-encrypt hook. |
+| `dosfstools` (core 4.2-5) | B:28 · I:28 | ESP format (B:28) | dosfstools | 4.2-1.2 | - | 4.2-1.2+b2 | 4.2-1.2+b2 | 4.2-1.2build1 | **SAME** |
+| `efibootmgr` (core 18-4) | B:29 · I:36 | UEFI boot entries (B:29) | efibootmgr | 18-2+b1 | - | 18-4.1+b1 | 18-4.1+b1 | 18-4ubuntu1 | **SAME** |
+| `limine` (extra 12.9.3-1) | B:30 · I:37 | bootloader (B:30) | (none) | - | - | - | - | - | **MISSING-BUILD** Not in Debian or Ubuntu in any suite (sources.debian.org search empty). Upstream github.com/limine-bootloader/limine v12.9.3 = Arch 12.9.3; autotools release tarball. |
+| `limine-mkinitcpio-hook` ([ryoku] 1.37.1 / AUR 1.40.0-1) | B:33 | Limine menu regeneration, OS detection, UKI tree (B:31-33) | (none) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe release/packages/limine-mkinitcpio-hook (1.37.1; CachyOS/AUR 1.40.0) builds limine-entry-tool with gradle 9.6.1 + GraalVM CE 25 native-image (its PKGBUILD:36-40); Debian gradle is 4.4.1/4.6 and has no GraalVM. Upstream ships only install/arch-linux and says "no pre-built packages" for other distros; the mkinitcpio hook half must become /etc/kernel/postinst.d + postrm.d hooks. |
+| `limine-snapper-sync` ([ryoku] 1.31.0 / AUR 1.32.1-1) | B:34 | Snapshots submenu in the Limine menu (B:31-34) | (none) | - | - | - | - | - | **MISSING-BUILD** gitlab.com/Zesko/limine-snapper-sync 1.31.0 ([ryoku] PKGBUILD:10), same gradle+GraalVM build (PKGBUILD:24-27); runtime deps limine snapper btrfs-progs libnotify (cachyos.db). |
+| `plymouth` (extra 26.134.222-3) | B:35 | boot splash (B:35; chroot.sh:145) | plymouth plymouth-themes | 24.004.60-5 | - | 26.134.222-1 | 26.134.222-1 | 24.004.60+git20250831.4a3c171d-0ubuntu8 | **SAME** trixie 24.004.60, forky/sid 26.134.222 = Arch. |
+| `snapper` (extra 0.13.2-1) | B:36 | btrfs snapshots (B:36) | snapper | 0.10.6-1.2 | - | 0.10.6-1.3+b1 | 0.10.6-1.3+b1 | 0.10.6-1.3 (univ) | **SAME** Debian/Ubuntu 0.10.6 in every suite vs Arch 0.13.2. |
+| `snap-pac` (extra 3.0.1-3) | B:39 | pre/post snapshots around pacman transactions (B:37-39) | snapper (its /etc/apt/apt.conf.d/80snapper) | 0.10.6-1.2 | - | 0.10.6-1.3+b1 | 0.10.6-1.3+b1 | 0.10.6-1.3 (univ) | **NOT-NEEDED-ON-DEBIAN** Debian snapper ships /etc/apt/apt.conf.d/80snapper: DPkg::Pre-Invoke/Post-Invoke `snapper create -d apt -c number -t pre\|post` when /etc/snapper/configs/root exists. Differences: description is "apt" (snap-pac records the pacman command line), no /etc/snap-pac.ini, `snapper cleanup number` after each run, opt-out via DISABLE_APT_SNAPSHOT in /etc/default/snapper. |
+| `networkmanager` (extra 1.58.1-2) | B:42 · I:47 | networking, enabled at install (B:42; bootloader.sh:40) | network-manager | 1.52.1-1 | - | 1.58.1-1 | 1.58.1-1 | 1.54.3-2ubuntu3.1 | **RENAMED** unit name NetworkManager.service is the same. |
+| `iwd` (extra 3.12-2) | B:43 · I:48 | default NM Wi-Fi backend (B:43; I:48) | iwd | 3.8-2 | - | 3.12-1 | 3.12-1 | 3.10-1ubuntu1 (univ) | **SAME** trixie 3.8, forky/sid 3.12 = Arch. |
+| `wpa_supplicant` (core 2:2.12-1) | B:48 · I:49 | alternate NM Wi-Fi backend for WPA3-SAE (B:44-48; I:49) | wpasupplicant | 2:2.10-24 | - | 2:2.10-25+b2 | 2:2.10-25+b2 | 2:2.11-0ubuntu5 | **RENAMED** Debian 2.10, Ubuntu 2.11, Arch 2.12. |
+| `wireless-regdb` (core 2026.09.03-1) | B:50 · I:50 | regulatory DB (B:49-50; I:50) | wireless-regdb | 2026.05.30-1~deb13u1 | - | 2026.09.03-1 | 2026.09.03-1 | 2026.05.30-0ubuntu1~26.04.1 | **SAME** |
+| `iw` (core 6.17-1) | B:52 · U:147 | ryoku-wifi-powersave in Game Mode (B:51-52; U:146-147) | iw | 6.9-1+b1 | - | 6.17-1+b1 | 6.17-1+b1 | 6.17-1 | **SAME** |
+| `nftables` (extra 1:1.1.7-3) | B:56 · U:151 | Connections kill switch (B:53-56; U:148-151) | nftables | 1.1.3-1 | - | 1.1.7-3 | 1.1.7-3 | 1.1.6-1 | **SAME** |
+| `bluez` (extra 5.87-2) | B:62 · U:155 | bluetoothd for Quickshell.Bluetooth (B:58-62; U:152-155) | bluez | 5.82-1.1 | - | 5.87-5 | 5.87-5 | 5.85-4ubuntu0.4 | **SAME** trixie 5.82, Arch 5.87. |
+| `bluez-utils` (extra 5.87-2) | B:63 · U:156 | bluetoothctl for pair flows (B:63; BtLink.qml:135) | bluez | 5.82-1.1 | - | 5.87-5 | 5.87-5 | 5.85-4ubuntu0.4 | **RENAMED** Debian has no bluez-utils split: bluetoothctl ships in `bluez`. |
+| `pipewire` (extra 1:1.6.9-1) | B:66 · U:118 | audio server; pw-record drives the visualiser (B:66; U:114-118; Waveform.qml:12) | pipewire pipewire-bin | 1.4.2-1 | 1.6.9-2~bpo13+1 | 1.6.9-2 | 1.6.9-2 | 1.6.2-1ubuntu1.2 | **SAME** trixie 1.4.2, bpo/forky/sid 1.6.9 = Arch. |
+| `pipewire-alsa` (extra 1:1.6.9-1) | B:67 | ALSA routing (B:67) | pipewire-alsa | 1.4.2-1 | 1.6.9-2~bpo13+1 | 1.6.9-2 | 1.6.9-2 | 1.6.2-1ubuntu1.2 | **SAME** |
+| `pipewire-pulse` (extra 1:1.6.9-1) | B:68 | Pulse API; on Arch also drags in libpulse, which owns `pactl` (ryoku-bt-audio:33; U:116) | pipewire-pulse pulseaudio-utils | 1.4.2-1 | 1.6.9-2~bpo13+1 | 1.6.9-2 | 1.6.9-2 | 1.6.2-1ubuntu1.2 | **SAME** Debian puts `pactl` in pulseaudio-utils, which nothing here pulls: add it explicitly. |
+| `wireplumber` (extra 0.5.18-1) | B:69 | session manager; wpctl (ryoku-volume:10); 51-ryoku-bluetooth.conf | wireplumber | 0.5.8-2 | 0.5.12-1~bpo13+1 | 0.5.18-1 | 0.5.18-1 | 0.5.13-1ubuntu1.1 | **SAME** trixie 0.5.8, bpo 0.5.12, forky/sid 0.5.18 = Arch. |
+| `pipewire-audio` (extra 1:1.6.9-1) | B:75 | BT A2DP codecs LDAC/AAC/aptX/LC3 (B:70-75; 51-ryoku-bluetooth.conf:24) | pipewire-audio libspa-0.2-bluetooth libldacbt-enc2 libfreeaptx0 liblc3-1 | 1.4.2-1 | 1.6.9-2~bpo13+1 | 1.6.9-2 | 1.6.9-2 | 1.6.2-1ubuntu1.2 | **SPLIT** Debian/Ubuntu PipeWire is built without libfdk-aac (non-free), so the `aac` entry of `bluez5.codecs = [ ldac aptx_hd aptx sbc_xq aac sbc ]` never resolves; LDAC/aptX/LC3 are available. |
+| `alsa-utils` (extra 1.2.16-1) | B:80 | manual codec diagnosis (B:76-80) | alsa-utils | 1.2.14-1 | - | 1.2.16-1 | 1.2.16-1 | 1.2.15.2-1ubuntu1 | **SAME** |
+| `rtkit` (extra 0.14-1) | B:84 · U:163 | realtime scheduling for PipeWire, enabled at install (B:81-84; bootloader.sh:40; U:161-163) | rtkit | 0.13-5.1+b1 | - | 0.14-1 | 0.14-1 | 0.14-1 | **SAME** unit rtkit-daemon.service same name. |
+| `mesa` (extra 1:26.2.5-1) | B:87 | GL/EGL/GBM + VA-API (B:87; amd.sh:69) | libgl1-mesa-dri libglx-mesa0 libegl-mesa0 libgbm1 mesa-libgallium mesa-va-drivers | 25.0.7-2+deb13u1 | 26.1.6-1~bpo13+1 | 26.1.6-1 | 26.2.5-1 | 26.0.8-1ubuntu0.3 | **SPLIT** Arch 26.2.5; trixie 25.0.7, bpo/forky 26.1.6, sid 26.2.5, resolute 26.0.8 (Ubuntu folds VA drivers into mesa-libgallium; no mesa-va-drivers). |
+| `vulkan-icd-loader` (extra 1.4.363.0-1) | B:88 | Vulkan loader (B:88; vulkan.sh:65) | libvulkan1 | 1.4.309.0-1 | - | 1.4.363.0-1 | 1.4.363.0-1 | 1.4.341.0-1 | **RENAMED** |
+| `xorg-xwayland` (extra 24.1.14-1) | B:95 · I:60 · U:37 | X11 apps under the compositor (B:95; U:37; I:60) | xwayland | 2:24.1.6-1 | - | 2:24.1.14-1 | 2:24.1.14-1 | 2:24.1.10-1 | **RENAMED** |
+| `xdg-desktop-portal-gtk` (extra 1.15.3-1) | B:96 · U:57 | GTK portal / file chooser (B:96; U:57) | xdg-desktop-portal-gtk | 1.15.3-1 | - | 1.15.3-2+b1 | 1.15.3-2+b1 | 1.15.3-2ubuntu1 | **SAME** |
+| `xdg-user-dirs` (extra 0.20-1) | B:97 | XDG dirs (B:97; 60-ryoku-xdg-dirs:6) | xdg-user-dirs | 0.18-2 | - | 0.20-1 | 0.20-1 | 0.19-1 | **SAME** |
+| `qt6-wayland` (extra 6.12.0-1) | B:98 · U:40 | Qt Wayland QPA for shell/hub (B:98; U:40) | qt6-wayland | 6.8.2-4 | - | 6.11.2-2 | 6.11.2-2 | 6.10.2-4 (univ) | **SAME** Must be the same Qt build as qt6-declarative: trixie's Qt 6.8.2 is below the 6.9 the shell needs (see qt6-declarative). |
+| `qt5-wayland` (extra 5.15.19+kde+r55-1) | B:99 · U:41 | Wayland QPA for a Qt5-built SDDM greeter (B:93-99; U:38-41) | qtwayland5 | 5.15.15-3 | - | 5.15.19-2 | 5.15.19-2 | 5.15.18-1 (univ) | **RENAMED** Debian's sddm links Qt6 (libqt6core6t64, libqt6quick6 … per packages.debian.org/trixie/sddm), so the Qt5 rationale does not apply on Debian; keep only if a Qt5 app needs it. |
+| `qt6ct` (extra 0.11-9) | B:100 | Qt theming, Papirus-Dark (deploy.sh:877; B:107-110) | qt6ct | 0.10-2+b1 | - | 0.11-2+b2 | 0.11-2+b2 | 0.11-2build1 (univ) | **SAME** trixie 0.10 vs Arch 0.11. |
+| `adwaita-icon-theme` (extra 51.0-1) | B:101 | base icons (B:101) | adwaita-icon-theme | 48.1-1 | - | 51.0-1 | 51.0-1 | 50.0-1 | **SAME** |
+| `gnome-themes-extra` (extra 1:3.28-1) | B:106 · U:68 | Adwaita-dark GTK theme (B:102-106; U:65-68) | gnome-themes-extra | 3.28-4 | - | 3.28-5+b1 | 3.28-5+b1 | 3.28-5 | **SAME** |
+| `papirus-icon-theme` (extra 20260801-1) | B:110 · U:72 | Qt icon theme selected by qt6ct.conf (B:107-110; U:69-72) | papirus-icon-theme | 20250501-1 | - | 20260801-1 | 20260801-1 | 20250501+git20260316-0ubuntu1 (univ) | **SAME** |
+| `vimix-cursors` (extra 2020_02_24-6) | B:114 | extra XCursor theme in the picker (B:112-114) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/vinceliuice/Vimix-cursors tag 2020-02-24 (Arch 2020_02_24); prebuilt dist/ trees in the repo. |
+| `flatpak` (extra 1:1.18.4-1) | B:118 | stash .flatpak installs (B:116-118; stash-install.sh:41) | flatpak | 1.16.6-1~deb13u2 | - | 1.18.4-1 | 1.18.4-1 | 1.16.6-1 (univ) | **SAME** |
+| `sddm` (extra 0.21.0-7) | B:121 | greeter, enabled at install (B:121; bootloader.sh:40) | sddm | 0.21.0+git20250502.4fe234b-2 | - | 0.21.0+git20260819.da0b64d-1 | 0.21.0+git20260819.da0b64d-1 | 0.21.0+git20250502.4fe234b-2ubuntu3 (univ) | **SAME** Debian sddm 0.21.0+git (Qt6 build) = Arch 0.21.0. |
+| `weston` (extra 15.0.1-3) | B:127 · U:56 | SDDM greeter compositor `weston --shell=kiosk` (B:122-127; U:50-56) | weston | 14.0.2-1 | - | 16.0.0-1 | 16.0.0-1 | 14.0.2-5 (univ) | **SAME** trixie 14.0.2, forky 16.0.0, Arch 15.0.1. |
+| `polkit` (extra 127-3) | B:128 | authorization; shell agent (Polkit.qml:26) | polkitd pkexec | 126-2 | - | 127-3 | 128-1 | 127-2ubuntu1.1 | **SPLIT** |
+| `gnome-keyring` (extra 1:51.1-1) | B:129 | Secret Service; Ryoku prompter interop (B:129; prompter_interop_test.go:12) | gnome-keyring libpam-gnome-keyring | 48.0-1 | - | 51.1-3 | 51.1-3 | 50.0-1 | **SPLIT** PAM module is a separate deb on Debian. |
+| `qt6-declarative` (extra 6.12.0-1) | B:130 · U:19 make · U:143 | QML runtime of shell, hub, qylock (B:130; U:139-143; U:19 make) | qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-templates qml6-module-qtquick-shapes qml6-module-qtquick-effects qml6-module-qtquick-layouts qml6-module-qtquick-window qml6-module-qtquick-dialogs qml6-module-qt-labs-folderlistmodel qml6-module-qtqml-models qml6-module-qtqml-workerscript qml6-module-qttest (runtime); qt6-declarative-dev qt6-declarative-dev-tools (build) | 6.8.2+dfsg-7 | - | 6.11.2+dfsg-3 | 6.11.2+dfsg-3 | 6.10.2+dfsg-3 (univ) | **SPLIT** OLDER on trixie: `RectangularShadow` (QtQuick.Effects, Qt ≥ 6.9) is used in 13 shell files, e.g. DockItem.qml:123, LauncherSurface.qml:459; trixie has Qt 6.8.2 (no backport), forky/sid 6.11.2, resolute 6.10.2, Arch 6.12.0. Import census over tracked *.qml: QtQuick 848, Controls 65, Shapes 51, Effects 48, Qt5Compat.GraphicalEffects 17, QtMultimedia 14, Layouts 11, Qt.labs.folderlistmodel 8, Window 5, Dialogs 2, QtQml.Models 1, QtTest 1, org.kde.syntaxhighlighting 1. |
+| `qt6-5compat` (extra 6.12.0-1) | B:131 · U:42 | Qt5Compat.GraphicalEffects (17 imports) (B:131; U:42) | qml6-module-qt5compat-graphicaleffects libqt6core5compat6 | 6.8.2-3+b1 | - | 6.11.2-2 | 6.11.2-2 | 6.10.2-1 (univ) | **SPLIT** Qt-baseline bound (trixie 6.8.2). |
+| `qt6-svg` (extra 6.12.0-1) | B:132 · U:43 | SVG rendering (B:132; U:43) | libqt6svg6 | 6.8.2-3 | - | 6.11.2-2 | 6.11.2-2 | 6.10.2-2 (univ) | **RENAMED** Qt-baseline bound. |
+| `qt6-multimedia` (extra 6.12.0-1) | B:133 · U:142 | QML video surfaces: wallpaper previews, qylock (B:133; U:139-142) | qml6-module-qtmultimedia libqt6multimedia6 | 6.8.2-8 | - | 6.11.2-3 | 6.11.2-3 | 6.10.2-2 (univ) | **SPLIT** Qt-baseline bound. |
+| `qt6-multimedia-ffmpeg` (extra 6.12.0-1) | B:134 | FFmpeg backend for QtMultimedia (B:134) | libqt6multimedia6 | 6.8.2-8 | - | 6.11.2-3 | 6.11.2-3 | 6.10.2-2 (univ) | **RENAMED** Debian ships libffmpegmediaplugin.so inside libqt6multimedia6 (/usr/lib/x86_64-linux-gnu/qt6/plugins/multimedia/); no separate package. |
+| `gst-plugins-base` (extra 1.28.8-1) | B:135 | GStreamer codecs grouped with the lockscreen stack (B:120-135) | gstreamer1.0-plugins-base | 1.26.2-1+deb13u1 | - | 1.28.8-1 | 1.28.8-1 | 1.28.2-1ubuntu0.1 | **RENAMED** |
+| `gst-plugins-good` (extra 1.28.8-1) | B:136 | GStreamer codecs (B:136) | gstreamer1.0-plugins-good | 1.26.2-1+deb13u2 | - | 1.28.8-1 | 1.28.8-1 | 1.28.2-2ubuntu0.4 | **RENAMED** |
+| `gst-plugins-bad` (extra 1.28.8-1) | B:137 | GStreamer codecs (B:137) | gstreamer1.0-plugins-bad | 1.26.2-3+deb13u3 | - | 1.28.8-1 | 1.28.8-1 | 1.28.2-1ubuntu1.2 (univ) | **RENAMED** |
+| `gst-plugins-ugly` (extra 1.28.8-1) | B:138 | GStreamer codecs (B:138) | gstreamer1.0-plugins-ugly | 1.26.3-4+deb13u1 | - | 1.28.8-1 | 1.28.8-1 | 1.28.2-1 (univ) | **RENAMED** |
+| `gst-libav` (extra 1.28.8-1) | B:141 | ffmpeg-backed GStreamer decoding (B:139-141) | gstreamer1.0-libav | 1.26.2-1+deb13u1 | - | 1.28.8-1 | 1.28.8-1 | 1.28.2-1 (univ) | **RENAMED** |
+| `matugen` (extra 4.2.0-1) | B:146 · U:124 | material-you palette engine run on every wallpaper change (B:144-146; U:121-124; matugen/apps.toml) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/InioX/matugen v4.2.0 = Arch 4.2.0; cargo, no rust-version declared (edition 2021). |
+| `brightnessctl` (extra 0.5.1-3) | B:147 · U:101 | backlight (B:147; U:101; ryoku-hw-backlight:10) | brightnessctl | 0.5.1-3.1+b1 | - | 0.5.1-3.1+b2 | 0.5.1-3.1+b2 | 0.5.1-3.1build1 (univ) | **SAME** |
+| `hypridle` (extra 0.1.8-2) | B:148 · U:198 | idle daemon ryoku-idle renders a config for (B:148; U:198) | hypridle | - | 0.1.8-1~bpo13+1 | 0.1.8-1+b1 | 0.1.8-1+b1 | 0.1.7-2 (univ) | **SAME** Not in trixie main; trixie-bpo/forky/sid 0.1.8 = Arch; resolute 0.1.7. |
+| `upower` (extra 1.91.5-1) | B:149 · U:187 | battery / lid state (B:149; U:187; ryoku-clamshell:216) | upower | 1.90.9-1 | - | 1.91.5-1 | 1.91.5-1 | 1.91.1-1 | **SAME** |
+| `power-profiles-daemon` (extra 0.30-1) | B:150 · U:188 | power profiles (B:150; U:188; ryoku-power:442) | power-profiles-daemon | 0.30-1.1 | - | 0.30-2+b1 | 0.30-2+b1 | 0.30-2 | **SAME** |
+| `fuzzel` (extra 1.15.0-1) | B:151 | dmenu-protocol launcher; Ryoku's launcher parses the same protocol (B:151; rofiscript.js:1) | fuzzel | 1.12.0+ds-1 | - | 1.15.0+ds-1 | 1.15.0+ds-1 | 1.12.0+ds-1build1 (univ) | **SAME** |
+| `grim` (extra 1.5.0-2) | B:152 · U:111 | screenshots (B:152; U:111; ryoku-cmd-qr-scan:2) | grim | 1.4.0+ds-2+b2 | - | 1.5.0+ds-1 | 1.5.0+ds-1 | 1.4.0+ds-2build3 (univ) | **SAME** |
+| `playerctl` (extra 2.4.1-5) | B:153 · U:102 | media keys (B:153; U:102) | playerctl | 2.4.1-3 | - | 2.4.1-4 | 2.4.1-4 | 2.4.1-3build1 (univ) | **SAME** |
+| `slurp` (extra 1.5.0-2) | B:154 · U:112 | region select (B:154; U:112) | slurp | 1.5.0-1+b1 | - | 1.6.0really1.5.0-1 | 1.6.0really1.5.0-1 | 1.6.0-1 (univ) | **SAME** |
+| `wl-clipboard` (extra 1:2.3.0-1) | B:155 · U:108 | wl-copy/paste (B:155; U:108) | wl-clipboard | 2.2.1-2 | 2.3.0-1~bpo13+1 | 2.3.0-1 | 2.3.0-1 | 2.2.1-2build1 (univ) | **SAME** |
+| `wl-clip-persist` (extra 0.5.0-2) | B:156 · U:109 | clipboard persistence (B:156; U:109; clipboard_test.go:479) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/Linus789/wl-clip-persist v0.5.0 = Arch; cargo, rust-version 1.85 (trixie rustc suffices). |
+| `chromium` (extra 154.0.8037.97-1) | B:159 · U:232 opt | the `browser` role default (B:159-163; U:232 opt) | chromium (Debian); chromium-browser = snap transitional (Ubuntu) | 150.0.7871.181-1~deb13u1 | - | 154.0.8037.92-1 | 155.0.8059.79-1 | 2:1snap1-0ubuntu4 (univ) | **SAME** Ubuntu 26.04 has no chromium deb, only chromium-browser 2:1snap1 that installs the snap: REPLACED-BY snap or a third-party deb there. |
+| `firefox` (extra 158.0-1) | B:164 | second (Gecko) browser (B:160-164) | firefox-esr (Debian trixie/forky); firefox (sid only); Ubuntu `firefox` = snap transitional | 140.15.0esr-1~deb13u1 | - | 153.4.0esr-1 | 153.5.0esr-1 | - | **RENAMED** trixie 140 ESR, forky 153 ESR, sid firefox 158 = Arch 158. Mozilla's own APT repo (packages.mozilla.org) is the non-ESR deb route for all bases. |
+| `kitty` (extra 0.49.2-1) | B:165 · U:214 opt | default terminal (B:165; U:214 opt) | kitty | 0.41.1-2+deb13u2 | - | 0.48.2-1.1 | 0.48.2-1.1 | 0.45.0-1build1 (univ) | **SAME** trixie 0.41.1, resolute 0.45.0, forky/sid 0.48.2, Arch 0.49.2; kitty.conf feature compatibility with 0.41 not verified. |
+| `mpv` (extra 1:0.41.0-6) | B:166 · U:105 | live radio, webcam mirror, media (B:166; U:103-105) | mpv | 0.40.0-3+deb13u1 | - | 0.41.0-2+b4 | 0.41.0-2+b4 | 0.41.0-2ubuntu4 (univ) | **SAME** |
+| `mpv-mpris` (extra 1.3-1) | B:167 · U:106 | radio on the MPRIS bus (B:167; U:103-106) | mpv-mpris | 0.7.1-1+b2 | 1.2-1~bpo13+1 | 1.3-1+b1 | 1.3-1+b1 | 1.2-1 (univ) | **SAME** trixie 0.7.1, bpo 1.2, Arch 1.3. |
+| `nautilus` (extra 51.1-1) | B:168 · U:221 opt | file manager (B:168; U:221 opt) | nautilus | 48.3-2 | - | 51.0.1-3 | 51.0.1-3 | 1:50.2.2-0ubuntu0.2 | **SAME** |
+| `nautilus-python` (extra 4.2.0-1) | B:170 · U:222 opt | stash actions in Nautilus menu (B:169-170; U:222 opt) | python3-nautilus | 4.0.1-2 | - | 4.1.0-2 | 4.1.0-2 | 4.1.0-1build1 (univ) | **RENAMED** |
+| `qemu-desktop` (extra 11.1.2-1) | B:176 · U:235 opt | windowed VM (B:172-176; U:235 opt; ryovm:128) | qemu-system-x86 qemu-system-gui qemu-system-modules-opengl qemu-system-modules-spice qemu-block-extra qemu-utils | 1:10.0.13+ds-0+deb13u1 | 1:11.0.2+ds-2~bpo13+1 | 1:11.1.2+ds-3 | 1:11.1.2+ds-3 | 1:10.2.1+ds-1ubuntu3.2 | **SPLIT** Arch qemu-desktop is a meta over ~37 qemu-* module packages (extra.db). |
+| `edk2-ovmf` (extra 202608-1) | B:177 · U:237 opt | UEFI firmware for VMs (B:177; U:237 opt) | ovmf | 2025.02-8+deb13u1 | - | 2026.08+ds-2 | 2026.08+ds-2 | 2025.11-3ubuntu7.3 | **RENAMED** Debian ships only /usr/share/OVMF/OVMF_CODE_4M*.fd; hwcaps.go:574-585 probes edk2/x64/OVMF_CODE.4m.fd, edk2/x64/OVMF_CODE.fd, edk2-ovmf/x64/OVMF_CODE.fd, OVMF/OVMF_CODE.fd, none of which exist on Debian, so the Hub reports ovmf missing. |
+| `virglrenderer` (extra 1.3.0-2) | B:178 | host-GL acceleration for VMs (B:178) | libvirglrenderer1 | 1.1.0-2 | - | 1.3.0-1 | 1.3.0-1 | 1.2.0-2ubuntu2 | **RENAMED** |
+| `docker` (extra 1:29.9.1-1) | B:187 | cobalt-engine runtime, enabled on first use (B:180-187; system/containers/ryoku-docker:5) | docker.io | 26.1.5+dfsg1-9+deb13u1 | - | 28.5.2+dfsg4-5 | 28.5.2+dfsg4-5 | 29.1.3-0ubuntu4.1 (univ) | **RENAMED** trixie 26.1.5, forky 28.5.2, resolute 29.1.3 (universe), Arch 29.9.1; docker-ce from download.docker.com is the upstream deb route. |
+| `gamescope` (extra 3.16.31-1) | B:196 · U:229 opt | nested game compositor (B:189-196; U:229 opt) | gamescope | - | 3.16.22+ds-1~bpo13+1 (contrib) | 3.16.24+ds-2 (contrib) | 3.16.24+ds-2 (contrib) | 3.16.20+ds-1 (multiv) | **SAME** Debian contrib (trixie-bpo 3.16.22, forky/sid 3.16.24), Ubuntu multiverse 3.16.20, Arch 3.16.31; absent from trixie main. |
+| `gamemode` (extra 1.8.2-3) | B:197 · U:230 opt | gamemoderun governor (B:197; U:230 opt) | gamemode | 1.8.2-2 | - | 1.8.2-2+b2 | 1.8.2-2+b2 | 1.8.2-2build1 | **SAME** |
+| `mangohud` (extra 0.8.4-1) | B:198 · U:231 opt | FPS overlay incl. mangoapp for gamescope (B:198; U:231 opt) | mangohud | 0.7.2-2 | - | 0.8.4+dfsg-1+b1 | 0.8.4+dfsg-1+b1 | 0.8.2~rc2-1 (univ) | **SAME** trixie 0.7.2, forky/sid 0.8.4 = Arch. |
+| `xpadneo-dkms` ([ryoku] 0.10.4) | B:221 | Xbox One/Series Bluetooth pad driver (B:200-221) | xpadneo-dkms | - | - | 0.10.4-1 | 0.10.4-1 | - | **SAME** Ships from [ryoku] on Arch (release/packages/xpadneo-dkms 0.10.4). Debian forky/sid 0.10.4; absent from trixie and resolute (arch:all dkms source, backports trivially). |
+| `game-devices-udev` ([ryoku] 1.0 / AUR 1.1-1) | B:222 | uaccess udev rules for 27 pad vendors (B:211-222) | (none; steam-devices covers only Valve and a few) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe from codeberg.org/fabiscafe/game-devices-udev 1.0 (AUR 1.1); rules-only package. |
+| `broadcom-bt-firmware` ([ryoku] 12.0.1.1105 / AUR 12.0.1.1105-1) | B:230 | Broadcom BCM20702/43142 .hcd patchram (B:224-230) | (none; firmware-brcm80211 has no .hcd) | - | - | - | - | - | **MISSING-BUILD** [ryoku] PKGBUILD source[0] is upstream's own broadcom-bt-firmware-12.0.1.1105.deb (github.com/winterheart/broadcom-bt-firmware v12.0.1.1105_p4): the upstream .deb installs as-is. |
+| `bash-completion` (extra 2.18.0-1) | B:233 | sourced by ryoku.bash:17 (/usr/share/bash-completion/bash_completion, same path on Debian) | bash-completion | 1:2.16.0-7 | - | 1:2.16.0-8 | 1:2.16.0-8 | 1:2.16.0-8build1 | **SAME** |
+| `blesh` ([ryoku] 0.4.0_devel3 / AUR 0.3.4-5) | B:234 · U:216 opt | Fish-like Bash editing, sourced from /usr/share/blesh/ble.sh (B:234; ryoku.bash:18-19; U:216 opt) | (none) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe 0.4.0_devel3 from upstream prebuilt ble-0.4.0-devel3-2.tar.xz (github.com/akinomyoga/ble.sh); AUR 0.3.4. |
+| `bat` (extra 0.26.1-3) | B:235 | cat replacement (B:235; rashin habits/termserve tests) | bat | 0.25.0-2+b2 | - | 0.26.1+ds-1 | 0.26.1+ds-2 | 0.25.0-5ubuntu1 (univ) | **RENAMED** Debian binary is /usr/bin/batcat (packages.debian.org filelist); a `bat` symlink is needed wherever `bat` is called. |
+| `btop` (extra 1.4.7-1) | B:236 | system monitor; shipped btop.conf is written for v1.4 (ryoku/apps/btop/btop.conf:1) | btop | 1.3.2-0.1 | - | 1.4.7-1 | 1.4.7-1 | 1.4.6-2 (univ) | **SAME** trixie 1.3.2 (< 1.4 config), forky/sid 1.4.7 = Arch. |
+| `eza` (extra 0.23.5-2) | B:237 | ls replacement (B:237) | eza | 0.21.0-1+b1 | - | 0.23.5-5 | 0.23.5-5 | 0.23.4-1ubuntu1 (univ) | **SAME** |
+| `fastfetch` (extra 2.70.0-1) | B:238 · U:218 opt | system summary + RyoStore covers (B:238; U:218 opt; deploy.sh:865) | fastfetch | 2.40.4+dfsg-1 | - | 2.69.0+dfsg-1 | 2.69.0+dfsg-1 | 2.57.1+dfsg-1ubuntu1 (univ) | **SAME** trixie 2.40.4, forky/sid 2.69.0, Arch 2.70.0; config.jsonc key compatibility with 2.40 not verified. |
+| `fd` (extra 10.5.0-3) | B:239 | file finder (B:239) | fd-find | 10.2.0-1+b5 | - | 10.5.0-1 | 10.5.0-1 | 10.3.0-2ubuntu1 (univ) | **RENAMED** Debian binary is /usr/bin/fdfind. |
+| `fish` (extra 4.9.3-1) | B:240 · U:215 opt | optional shell (B:240; U:215 opt; ryoku/apps/fish) | fish | 4.0.2-1 | - | 4.9.3-1 | 4.9.3-1 | 4.2.1-3.2 (univ) | **SAME** trixie 4.0.2, Arch 4.9.3. |
+| `fzf` (extra 0.74.5-1) | B:241 | `fzf --bash` integration (ryoku.bash:15) | fzf | 0.60.3-1+b2 | - | 0.74.4-1 | 0.74.4-1 | 0.67.0-1 (univ) | **SAME** needs ≥ 0.48; trixie 0.60.3. |
+| `zsh` (extra 5.9.2-1) | B:242 · U:96 | shell (B:242; U:96) | zsh | 5.9-8+b24 | - | 5.9.2-1+b1 | 5.9.2-1+b1 | 5.9-8ubuntu3 | **SAME** |
+| `zsh-autosuggestions` (extra 0.7.1-1) | B:243 · U:97 | sourced by ryoku.zsh:45-46 | zsh-autosuggestions | 0.7.1-1 | - | 0.7.1-1 | 0.7.1-1 | 0.7.1-1build1 (univ) | **SAME** Path differs: ryoku.zsh sources /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh (Arch); Debian installs /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh, so the `[[ -r ]]` guard silently skips it. |
+| `zsh-history-substring-search` (extra 1.1.0-2) | B:244 · U:98 | sourced by ryoku.zsh:47-48 | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/zsh-users/zsh-history-substring-search v1.1.0 = Arch; a single .zsh file. |
+| `zsh-syntax-highlighting` (extra 0.8.0-2) | B:245 · U:99 | sourced by ryoku.zsh:49-50 | zsh-syntax-highlighting | 0.8.0-2 | - | 0.8.0-2 | 0.8.0-2 | 0.8.0-2build1 (univ) | **SAME** Path differs: Debian /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh vs Arch /usr/share/zsh/plugins/zsh-syntax-highlighting/… used at ryoku.zsh:49. |
+| `git` (extra 2.56.0-1) | B:246 · I:69 | VCS (B:246; I:69) | git | 1:2.47.3-0+deb13u1 | - | 1:2.53.0-1 | 1:2.55.0-1 | 1:2.53.0-1ubuntu1 | **SAME** |
+| `github-cli` (extra 2.102.0-1) | B:247 | gh CLI (B:247; bin/ryoku-project-bootstrap:5) | gh | 2.46.0-3 | - | - | 2.46.0-4+b1 | 2.46.0-4 (univ) | **RENAMED** Debian gh 2.46.0 in trixie and sid, absent from forky (dropped from testing); Ubuntu 2.46.0; Arch 2.102.0. cli.github.com publishes an APT repo. |
+| `lazygit` (extra 0.66.2-1) | B:248 | git TUI (B:248) | lazygit | 0.50.0+ds1-1+b2 | - | 0.57.0+ds1-1+b1 | 0.57.0+ds1-1+b1 | 0.57.0+ds1-1 (univ) | **SAME** trixie 0.50.0, forky/sid/resolute 0.57.0, Arch 0.66.2. |
+| `neovim` (extra 0.12.6-1) | B:249 · U:220 opt | shipped editor: LazyVim starter (B:249; U:220 opt; ryoku/apps/nvim/init.lua:1) | neovim | 0.10.4-8 | - | 0.12.4-1 | 0.12.4-1 | 0.11.6-1 (univ) | **SAME** OLDER on trixie: LazyVim requires Neovim ≥ 0.11.2 (LazyVim README:59); trixie 0.10.4, resolute 0.11.6, forky/sid 0.12.4, Arch 0.12.6. |
+| `pciutils` (core 3.15.0-1) | B:252 · I:85 | lspci GPU/Broadcom/VMD detection (B:250-252; I:84-85; pacstrap.sh:87) | pciutils | 1:3.13.0-2 | - | 1:3.15.0-2 | 1:3.15.0-2 | 1:3.14.0-1build2 | **SAME** |
+| `ripgrep` (extra 15.2.0-1) | B:253 | search (B:253) | ripgrep | 14.1.1-1+b4 | - | 15.2.0-1 | 15.2.0-1 | 15.1.0-1ubuntu1 (univ) | **SAME** |
+| `starship` (extra 1.27.0-1) | B:254 · U:217 opt | prompt (B:254; U:217 opt) | starship | 1.22.1-5 | - | 1.26.0-4 | 1.26.0-5 | 1.22.1-9ubuntu1 (univ) | **SAME** trixie 1.22.1, Arch 1.27.0. |
+| `zoxide` (extra 0.10.0-1) | B:255 | `cd` is zoxide (B:255; rashin/backend/habits.go:142) | zoxide | 0.9.7-1+b1 | - | 0.10.0-1 | 0.10.0-1 | 0.9.8-1 (univ) | **SAME** |
+| `quickshell` (extra 0.3.2-1) | B:258 · U:87 | the shell runtime (B:258; U:86-87) | quickshell | - | 0.3.0-1~bpo13+1 | 0.3.2-1 | 0.3.2-1 | - | **SAME** Needs ≥ 0.3.0: Quickshell.Networking (ConnectionsPage.qml:7), Quickshell.WindowManager (Wm.qml:6) and ShortcutInhibitor (KeybindsPage.qml:2053) were all added in v0.3.0 (upstream changelog/v0.3.0.md). trixie-bpo 0.3.0 is built on trixie Qt 6.8.2 (fails the Qt ≥ 6.9 need); forky/sid 0.3.2 = Arch; absent from resolute. |
+| `cava` (extra 1.0.0-1) | B:259 · U:113 | audio visualiser, matugen-themed (B:259; U:113; matugen/apps.toml:45) | cava | 0.10.4+dfsg-1 | - | 1.0.0+dfsg-2 | 1.0.0+dfsg-2 | 0.10.7+dfsg-1 (univ) | **SAME** trixie 0.10.4, forky/sid 1.0.0 = Arch. |
+| `cliphist` (extra 1:0.7.0-2) | B:260 · U:110 | clipboard history: `cliphist list` / `decode` (U:110; cliphist-thumbs.sh) | cliphist | 0.5.0-1+b9 | - | 0.5.0-1+b11 | 0.5.0-1+b11 | 0.5.0-1build1 (univ) | **SAME** Debian/Ubuntu 0.5.0 in every suite vs Arch 0.7.0. |
+| `hyprpicker` (extra 0.4.7-4) | B:261 · U:199 | color picker (B:261; U:199; ryoku-cmd-color-picker:2) | hyprpicker | - | 0.4.7-1~bpo13+1 | 0.4.7-1+b2 | 0.4.7-1+b2 | 0.4.6-1 (univ) | **SAME** trixie-bpo/forky/sid 0.4.7 = Arch; resolute 0.4.6; absent from trixie main. |
+| `imagemagick` (extra 7.1.2.34-1) | B:262 · U:120 | `magick` for thumbnails etc. (B:262; U:120; cliphist-thumbs.sh:6) | imagemagick | 8:7.1.1.43+dfsg1-1+deb13u12 | - | 8:7.1.2.31+dfsg1-1 | 8:7.1.2.33+dfsg1-1 | 8:7.1.2.18+dfsg1-1 (univ) | **SAME** Debian IM7 ships /usr/bin/magick-im7.q16 and creates `magick` through update-alternatives in postinst. |
+| `waifu2x-ncnn-vulkan` (extra 20250915-2) | B:265 · U:225 opt | GPU upscaler for ryoshot Beautify / ryowalls Enhance (B:263-265; U:225 opt; upscale_worker.go:17) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/nihui/waifu2x-ncnn-vulkan 20250915 = Arch; cmake with the bundled ncnn submodule (Debian has no libncnn-dev); models/ must install next to the binary. |
+| `jq` (extra 1.8.2-1) | B:266 · I:71 · U:119 | JSON in scripts (B:266; U:119; I:71) | jq | 1.7.1-6+deb13u3 | - | 1.8.2-1 | 1.8.2-1 | 1.8.1-4ubuntu2 | **SAME** |
+| `openrgb` (extra 1.1-1) | B:267 · U:228 opt | wallpaper-driven RGB lighting (B:267; U:228 opt; ryokumanifest/manifest.go:176) | openrgb | - | - | 1.0+ds-0.1 | 1.0+ds-0.1 | 0.9+git20251009+ds-1 (univ) | **SAME** Absent from trixie; forky/sid 1.0, resolute 0.9, Arch 1.1. |
+| `ddcutil` (extra 3.0.2-1) | B:269 · U:193 | external-monitor brightness over DDC/CI (B:268-269; U:189-193; 60-ryoku-i2c.rules:1) | ddcutil | 2.2.0-2 | 2.2.7-1~bpo13+1 | 2.2.7-1 | 2.2.7-1 | 2.2.5-1 (univ) | **SAME** |
+| `yazi` (extra 26.9.1-2) | B:270 · U:219 opt | terminal file manager (B:270; U:219 opt; ryoku/apps/yazi/yazi.toml) | (none; Debian rust-yazi 0.2.1 is an unrelated crate, librust-yazi-dev only) | - | - | - | - | - | **MISSING-BUILD** github.com/sxyazi/yazi v26.9.1 = Arch; cargo; rust-version 1.99.0 exceeds every Debian/Ubuntu rustc (max sid 1.97) -> rustup or an older tag. |
+| `curl` (core 8.23.0-1) | B:274 · I:70 · U:138 | downloads, wall-ui source browser (B:274; U:135-138; I:70) | curl | 8.14.1-2+deb13u5 | 8.21.0-2~bpo13+1 | 8.22.0-1 | 8.23.0-1 | 8.18.0-1ubuntu2.8 | **SAME** |
+| `libnotify` (extra 0.8.8-1) | B:275 | notify-send (B:275; localsend.sh:86) | libnotify-bin | 0.8.6-1 | - | 0.8.8-1+b1 | 0.8.8-1+b1 | 0.8.8-1 | **RENAMED** notify-send lives in libnotify-bin on Debian. |
+| `python` (core 3.14.8-1) | B:276 · D:8 · U:117 | helper scripts, wavecap.py (B:276; D:8; U:114-117) | python3 | 3.13.5-1 | - | 3.14.7-3 | 3.14.7-3 | 3.14.3-0ubuntu2 | **RENAMED** Listed in both base.packages and dev.packages. trixie 3.13.5, Arch 3.14.8. |
+| `xdg-utils` (extra 1.2.1-2) | B:277 | xdg-open (B:277; ryoku-cmd-qr-scan:3) | xdg-utils | 1.2.1-2 | - | 1.2.1-2 | 1.2.1-2 | 1.2.1-2ubuntu2 | **SAME** |
+| `ffmpeg` (extra 2:9.0.2-2) | B:278 · U:134 | compress, live-wallpaper frame grab (B:278; U:132-134) | ffmpeg | 7:7.1.5-0+deb13u1 | - | 7:9.0.2-3 | 7:9.0.2-3 | 7:8.0.1-3ubuntu2 (univ) | **SAME** trixie 7.1.5, forky/sid 9.0.2 = Arch. |
+| `yt-dlp` (extra 2026.08.19-1) | B:279 · U:107 | Lofi Girl radio + downloads (B:279; U:103-107) | yt-dlp | 2025.04.30-1 | 2026.08.19-1~bpo13+1 | 2026.08.19-1 | 2026.08.19-1 | 2026.03.17-1 (univ) | **SAME** OLDER on trixie main (2025.04.30): extractors go stale as sites change; trixie-bpo/forky/sid 2026.08.19 = Arch; resolute 2026.03.17. |
+| `desktop-file-utils` (extra 0.28-1) | B:280 | update-desktop-database for stash installs (B:280; stash-install.sh:447) | desktop-file-utils | 0.28-1 | - | 0.28-1+b2 | 0.28-1+b2 | 0.28-1build1 | **SAME** |
+| `libqalculate` (extra 5.13.2-1) | B:285 · U:186 | `qalc` launcher calculator (B:285; U:186; ryoku-cmd-calc:2) | qalc libqalculate23 | 5.5.2-1+b1 | - | 5.13.2-1 | 5.13.2-1 | 5.9.0-1 (univ) | **SPLIT** Arch libqalculate ships the qalc CLI; Debian splits it into `qalc`. |
+| `songrec` (extra 0.7.5-1) | B:286 · U:227 opt | Recognize Music in the launcher (B:286; U:227 opt; ryoku-cmd-songrec:4) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/marin-m/SongRec 0.7.6 (Arch 0.7.5); cargo; rust-version 1.88 (trixie 1.85 too old, bpo 1.96 fine). |
+| `tesseract` (extra 5.5.3-1) | B:291 · U:180 | OCR text grab (B:291; U:180; ryoku-cmd-ocr:2) | tesseract-ocr | 5.5.0-1+b1 | - | 5.5.0-1.1 | 5.5.0-1.1 | 5.5.0-1build1 (univ) | **RENAMED** |
+| `tesseract-data-eng` (extra 2:4.1.0-5) | B:292 · U:181 | English OCR data (B:292; U:181) | tesseract-ocr-eng | 1:4.1.0-2 | - | 1:4.1.0-2 | 1:4.1.0-2 | 1:4.1.0-2build1 (univ) | **RENAMED** |
+| `zbar` (extra 0.23.95-1) | B:293 · U:182 | zbarimg QR scan (B:293; U:182; Barcode.qml:5) | zbar-tools libzbar0t64 | 0.23.93-8 | - | 0.23.93-10 | 0.23.93-10 | 0.23.93-9ubuntu1 (univ) | **SPLIT** |
+| `gpu-screen-recorder` (extra 6.1.4-1) | B:297 · U:183 | KMS screen recorder (B:297; U:183; ryoku-cmd-screenrecord:14-19,191-211) | gpu-screen-recorder | - | - | 5.13.8-1 | 5.13.8-2 | - | **SAME** forky/sid 5.13.8 vs Arch 6.1.4; absent from trixie and resolute. Upstream git.dec05eba.com/gpu-screen-recorder, meson. |
+| `wf-recorder` (extra 0.6.0-2) | B:298 · U:184 | multi-GPU recording fallback (B:298; U:184) | wf-recorder | 0.5.0-2 | - | 0.6.0-1+b2 | 0.6.0-1+b2 | 0.6.0-1build1 (univ) | **SAME** |
+| `wtype` (extra 0.4-2) | B:302 · U:185 | types Voxtype transcripts (B:302; U:185) | wtype | 0.4-3+b1 | - | 0.4-3+b2 | 0.4-3+b2 | 0.4-3build1 (univ) | **SAME** |
+| `noto-fonts` (extra 1:2026.10.01-1) | B:305 · U:170 | base Latin/Greek/Cyrillic/etc. coverage (B:305; U:170) | fonts-noto-core fonts-noto-ui-core fonts-noto-extra | 20201225-2 | - | 20201225-6 | 20201225-6 | 20201225-2build1 | **SPLIT** Debian fonts-noto is a 20201225 snapshot in every suite (Arch 2026.10.01): same families, older glyph sets. |
+| `noto-fonts-cjk` (extra 20240730-1) | B:306 · U:171 | Japanese labels and the 力 mark (B:306; README.md:13-15; U:171) | fonts-noto-cjk | 1:20240730+repack1-1 | - | 1:20240730+repack1-1 | 1:20240730+repack1-1 | 1:20240730+repack1-1build1 | **RENAMED** 20240730 everywhere = Arch. |
+| `inter-font` (extra 4.1-1) | B:307 · U:169 | Ryoku UI text (B:307; U:169) | fonts-inter fonts-inter-variable | 4.1+ds-1 | - | 4.1+ds1-4 | 4.1+ds1-4 | 4.1+ds-1 (univ) | **RENAMED** 4.1 everywhere = Arch. |
+| `noto-fonts-emoji` (extra 1:2.051-1) | B:308 · U:172 | emoji (B:308; U:172) | fonts-noto-color-emoji | 2.051-0+deb13u1 | - | 2.051-1 | 2.051-1 | 2.051-1build1 | **RENAMED** |
+| `ttf-jetbrains-mono-nerd` (extra 3.5.1-2) | B:309 · I:61 · U:168 | "JetBrainsMono Nerd Font" hardcoded by the shell UI and the installer kiosk (B:309; U:164-168; I:61) | (none; fonts-jetbrains-mono has no Nerd glyphs) | - | - | - | - | - | **MISSING-BUILD** ryanoasis/nerd-fonts v3.5.1 JetBrainsMono.tar.xz = Arch 3.5.1. |
+| `ttf-firacode-nerd` (extra 3.5.1-2) | B:310 | terminal font option (B:310) | (none) | - | - | - | - | - | **MISSING-BUILD** nerd-fonts v3.5.1 FiraCode.tar.xz. |
+| `ttf-hack-nerd` (extra 3.5.1-2) | B:311 | terminal font option (B:311) | (none) | - | - | - | - | - | **MISSING-BUILD** nerd-fonts v3.5.1 Hack.tar.xz. |
+| `ttf-material-symbols-variable` (extra 2.874-1) | B:312 · U:173 | every pill/bar icon via MaterialIcon.qml (B:312; U:164-167,173) | (none; fonts-material-design-icons-iconfont is the legacy Material Icons family) | - | - | - | - | - | **MISSING-BUILD** google/material-design-icons `variablefont/MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf` (+Outlined/Sharp); Arch 2.874. |
+| `otf-space-grotesk` ([ryoku] 2.0.0) | B:318 | Space Grotesk brand UI sans (B:313-318) | fonts-space-grotesk (Ubuntu resolute only) | - | - | - | - | 2.0.0-0ubuntu2 (univ) | **MISSING-BUILD** [ryoku] recipe from upstream SpaceGrotesk-2.0.0.zip (github.com/floriankarsten/space-grotesk 2.0.0); Ubuntu resolute universe has 2.0.0. |
+| `ttf-maple-mono-nf` ([ryoku] 7.9) | B:323 | Maple Mono NF terminal/code face (B:319-323) | (none) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe from github.com/subframe7536/maple-font v7.9 MapleMono-NF.zip. |
+
+**As-is on Debian:** NO — 19 lines are MISSING-BUILD (18 on every base; Space Grotesk exists only in Ubuntu) and the Qt runtime is too old on trixie.
+
+**Port steps:**
+1. Write a Debian-named twin of this set from the *Debian / Ubuntu pkg(s)* column (one name per line, same comment discipline), and install it with `mmdebstrap --variant=minbase --components=main,contrib,non-free,non-free-firmware` (Ubuntu: `main,restricted,universe,multiverse`) instead of `pacstrap`; `genfstab` and `arch-chroot` are available from Debian's `arch-install-scripts` (trixie 28, bpo 31).
+2. Add `pulseaudio-utils` (pactl, used by `system/hardware/audio/ryoku-bt-audio:33` and the shell's audio-watch per `release/packages/ryoku-desktop/PKGBUILD:116`), `libpam-gnome-keyring`, `cryptsetup-initramfs` (initramfs-tools) and `console-data` (live) explicitly: on Arch they arrive through packages that do not pull them on Debian.
+3. Build and publish the base-set MISSING-BUILD debs listed in "MISSING-BUILD list" below (limine, limine-entry-tool hook, limine-snapper-sync, vimix-cursors, matugen, wl-clip-persist, game-devices-udev, broadcom-bt-firmware (upstream .deb), blesh, zsh-history-substring-search, waifu2x-ncnn-vulkan, yazi, songrec, 4 Nerd/Material fonts, Space Grotesk, Maple Mono NF, plus the base-dependent ones in the version-sensitive list).
+4. Replace the Arch-only mechanisms: mkinitcpio → initramfs-tools (or dracut) incl. a port of the `ryoku-gpu-trim` hook (`installation/backend/lib/chroot.sh:145`); snap-pac → Debian snapper's `/etc/apt/apt.conf.d/80snapper`; pacman keyring → `debian-archive-keyring`/apt `signed-by`.
+5. Fix path couplings: `ryoku.zsh:45-50` → `/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh`, `/usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh`, and wherever the port installs zsh-history-substring-search; `hwcaps.go:574-585` add `usr/share/OVMF/OVMF_CODE_4M.fd`; provide `bat` and `fd` names (Debian ships `batcat`, `fdfind`) wherever scripts call them.
+6. Make the release manifest (`ryokumanifest/generate.go:117-120`) read the Debian-named lists, and the doctor's package queries go through dpkg/apt (cross-cutting; owned by the CLI section).
+
+**Complexity:** High — 122 of 145 lines map by same name, rename or split, but the remaining 19 builds include the boot stack (limine + GraalVM-built limine-entry-tool) and the Qt baseline decides the base.
+
+**Issues / risks:**
+- Qt ≥ 6.9 is a hard floor: `RectangularShadow` (QtQuick.Effects, new in Qt 6.9) appears in 13 shell QML files (e.g. `ryoku/shell/quickshell/shell/modules/dock/DockItem.qml:123`, `.../launcher/variants/hero/LauncherSurface.qml:459`). trixie ships Qt 6.8.2 and trixie-backports carries no Qt, so on trixie the whole Qt 6 module set (qtbase, qtdeclarative, qtwayland, qtsvg, qtmultimedia, qt5compat, qtimageformats, qtshadertools, KF6 syntax-highlighting) and every deb that depends on Qt's private ABI (Debian marks those with `qt6-base-private-abi`; qt6ct, quickshell) must be rebuilt together.
+- `base.packages:8-11` justifies `rust` by "the depth cutout worker and several AUR dependencies are Rust programs", but no `*.rs` or `Cargo.toml` is tracked at the pinned commit (`git ls-files`).
+- `base.packages:16-19` says the CachyOS kernel "is an opt-in post-install … never baked into the base", while `cachyos.packages:1-3` and `pacstrap.sh:71-79` pacstrap the full CachyOS layer whenever `RYOKU_VARIANT=cachyos` (baked into the ISO at `installation/iso/build.sh:194`, read at `installation/backend/ryoku-install:94-99`). Both are true for different paths: the opt-in kernel-only route is `system/extras/ryoku-pkg-cachyos` (its header, lines 3-9).
+- `python` is listed in both base.packages and dev.packages (`B:276`, `D:8`).
+- Debian/Ubuntu PipeWire has no AAC (fdk-aac is non-free), so the `aac` entry in `ryoku/apps/wireplumber/wireplumber.conf.d/51-ryoku-bluetooth.conf:24` never resolves; AAC-only headsets fall back to SBC-XQ/SBC.
+- Debian's Noto (`fonts-noto-core`) is a 20201225 snapshot in every suite vs Arch 2026.10.01: same family names, older glyph coverage.
+- chromium on Ubuntu 26.04 and firefox on Ubuntu exist only as snap-transitional debs; Debian trixie/forky ship only `firefox-esr`.
+- `gh` (github-cli) is absent from forky (removed from testing) though present in trixie and sid.
+- trixie main lacks hypridle, hyprpicker, gamescope (all in trixie-backports), openrgb, quickshell, gpu-screen-recorder, xpadneo-dkms.
+- `yt-dlp` in trixie main is 2025.04.30; the live-radio feature (`ryoku-desktop/PKGBUILD:103-107`) resolves a YouTube live page at play time, which depends on current extractors (trixie-backports has 2026.08.19).
+
+**Questions for the human:**
+- Browser debs: (a) Debian `firefox-esr` (140 ESR on trixie) — no extra repo, older engine; (b) Mozilla's APT repo `packages.mozilla.org` — current Firefox on every base, one more signed third-party repo. On Ubuntu also chromium: (a) snap (what `chromium-browser` installs) — breaks the "debs only" model and the `/usr/bin/chromium` path; (b) a third-party chromium deb repo; (c) drop chromium on Ubuntu and make another browser the `browser` role.
+
+---
+
+### Hardware profiles (`system/packages/hardware.packages`)
+
+**What it does:** per-profile microcode and one pinned `vulkan-driver` provider, in `[amd]`, `[intel]`, `[nvidia]`, `[vm]` sections (hardware.packages:1-19). 11 lines.
+
+**Arch couplings:**
+- Selection: `pacstrap.sh:49-63` maps `RYOKU_PROFILE` → sections: `amd`→[amd], `intel`→[intel], `amd-nvidia`→[amd]+[intel]+[nvidia], `vm`→[vm]; anything else dies (`:55`). `read_section` (`:10-16`) is an awk INI reader. **Doc/code disagreement:** `system/packages/README.md:17-19` says `amd-nvidia` takes `[amd]` and `[nvidia]`; the file header (`hardware.packages:6`) and the code (`pacstrap.sh:53`) also add `[intel]`.
+- The provider pin exists because pacman prompts among 5 `vulkan-driver` providers (`hardware.packages:12-19`, `pacstrap.sh:122-129`); Debian has no such virtual with competing providers (RADV, ANV and lavapipe are all in `mesa-vulkan-drivers`), so that failure mode does not exist on Debian.
+- `lib32-*` lines require Arch `[multilib]` (`offline-repo.sh:104-105` adds it for the closure); `ryoku/cli/internal/doctor/reconcile_multilib.go` and `system/extras/ryoku-pkg-multilib` manage it on installed boxes.
+- The actual GPU driver comes from `system/hardware/drivers/*.sh` run in the target (`hardware.packages:7-10`): `amd.sh:69` `mesa vulkan-radeon`; `intel.sh:69` `intel-media-driver vpl-gpu-rt vulkan-intel`, `intel.sh:73` `sof-firmware`; `vulkan.sh:65` `vulkan-icd-loader`; `nvidia.sh:150-200` chooses `nvidia-open` prebuilts / `nvidia-open-dkms` / `nvidia-470xx-dkms` / `nvidia-580xx-dkms` (AUR) + `nvidia-utils libva-nvidia-driver` (+ `lib32-*` when multilib) and derives `${pkgbase}-headers` (`:176`), and writes a pacman hook `/etc/pacman.d/hooks/ryoku-nvidia.hook` (`:252-253`). Debian names for those: `mesa-vulkan-drivers`, `intel-media-va-driver-non-free`, `libmfx-gen1.2` (vpl-gpu-rt; trixie 25.1.4), `firmware-sof-signed`, `libvulkan1`, `nvidia-open-kernel-dkms` (contrib; 550.163, absent from forky), `nvidia-driver`, `nvidia-vaapi-driver` (trixie 0.0.13, bpo 0.0.18), `nvidia-tesla-470-driver` (sid only), no 580 branch in Debian; Ubuntu `nvidia-driver-{580,590,595,610,615}-open` (resolute-updates).
+
+**Dependencies:**
+
+| Arch pkg (Arch ver) | Sets | Provides in Ryoku (cite) | Debian / Ubuntu pkg(s) | trixie | trixie-bpo | forky | sid | resolute | Status: min version / why |
+|---|---|---|---|---|---|---|---|---|---|
+| `amd-ucode` (core 20260916-1) | H[amd]:22 · I:16 | AMD microcode (H:22; I:16) | amd64-microcode | 3.20250311.1 (nff) | - | 3.20251202.1 (nff) | 3.20251202.1 (nff) | 3.20251202.1ubuntu2 | **RENAMED** non-free-firmware; initramfs-tools picks it up through the package's own hook (no mkinitcpio microcode hook). |
+| `vulkan-radeon` (extra 1:26.2.5-1) | H[amd]:23 | RADV, the pinned vulkan-driver provider (H:12-23; amd.sh:69) | mesa-vulkan-drivers | 25.0.7-2+deb13u1 | 26.1.6-1~bpo13+1 | 26.1.6-1 | 26.2.5-1 | 26.0.8-1ubuntu0.3 | **RENAMED** Debian puts RADV, ANV and lavapipe in one deb and has no vulkan-driver virtual with competing providers, so the provider-pin problem of H:12-19 does not occur. |
+| `lib32-vulkan-radeon` (multilib 1:26.2.5-1) | H[amd]:24 | 32-bit RADV for games (H:24) | mesa-vulkan-drivers:i386 | 25.0.7-2+deb13u1 | 26.1.6-1~bpo13+1 | 26.1.6-1 | 26.2.5-1 | 26.0.8-1ubuntu0.3 | **REPLACED-BY** Arch multilib -> Debian multiarch: `dpkg --add-architecture i386` then the :i386 package. |
+| `intel-ucode` (extra 20260925-1) | H[intel]:27 · I:17 | Intel microcode (H:27; I:17) | intel-microcode | 3.20251111.1~deb13u1 (nff) | - | 3.20260227.1 (nff) | 3.20260227.1 (nff) | 3.20260210.1ubuntu2 | **RENAMED** non-free-firmware. |
+| `vulkan-intel` (extra 1:26.2.5-1) | H[intel]:28 | ANV (H:28; intel.sh:69) | mesa-vulkan-drivers | 25.0.7-2+deb13u1 | 26.1.6-1~bpo13+1 | 26.1.6-1 | 26.2.5-1 | 26.0.8-1ubuntu0.3 | **RENAMED** same deb as RADV. |
+| `lib32-vulkan-intel` (multilib 1:26.2.5-1) | H[intel]:29 | 32-bit ANV (H:29) | mesa-vulkan-drivers:i386 | 25.0.7-2+deb13u1 | 26.1.6-1~bpo13+1 | 26.1.6-1 | 26.2.5-1 | 26.0.8-1ubuntu0.3 | **REPLACED-BY** multiarch i386. |
+| `intel-media-driver` (extra 26.3.5-1) | H[intel]:33 | iHD VA-API decode (H:30-33; intel.sh:69) | intel-media-va-driver-non-free (or intel-media-va-driver, main, reduced codecs) | 25.2.3+ds1-1 (nf) | - | 26.2.4+ds1-1 (nf) | 26.2.4+ds1-1 (nf) | 26.1.2+ds1-1 (multiv) | **RENAMED** non-free component (Ubuntu multiverse); intel.sh:69 also installs vpl-gpu-rt and sof-firmware (Debian: libmfx-gen1.2 / firmware-sof-signed). |
+| `nvidia-utils` (extra 615.78.08-1) | H[nvidia]:44 | NVIDIA userspace for Turing+ open modules (H:41-45; nvidia.sh:180-191) | nvidia-driver nvidia-vulkan-icd nvidia-driver-libs nvidia-open-kernel-dkms (Debian non-free/contrib); nvidia-driver-615-open (Ubuntu) | 550.163.01-2 (nf) | 550.163.01-4~bpo13+1 (nf) | 550.163.01-5.1 (nf) | 550.163.01-5.1 (nf) | 615.71.09-0ubuntu0.26.04.2 (multiv) | **OLDER** Debian has 550.163 in every suite (555 only in experimental) vs Arch 615.78: no Blackwell (RTX 50) support, which needs ≥ 570. Ubuntu resolute ships nvidia-driver-615-open 615.71 (multiverse). NVIDIA's CUDA APT repo for debian13 is the current-driver deb route on Debian. |
+| `lib32-nvidia-utils` (multilib 615.78.08-1) | H[nvidia]:45 | 32-bit NVIDIA GL/Vulkan (H:45) | nvidia-driver-libs:i386 (Debian); libnvidia-gl-615:i386 (Ubuntu) | 550.163.01-2 (nf) | 550.163.01-4~bpo13+1 (nf) | 550.163.01-5.1 (nf) | 550.163.01-5.1 (nf) | 615.71.09-0ubuntu0.26.04.2 (multiv) | **OLDER** multiarch i386; same 550 ceiling on Debian. |
+| `vulkan-swrast` (extra 1:26.2.5-1) | H[vm]:50 | lavapipe for VMs (H:48-50) | mesa-vulkan-drivers | 25.0.7-2+deb13u1 | 26.1.6-1~bpo13+1 | 26.1.6-1 | 26.2.5-1 | 26.0.8-1ubuntu0.3 | **RENAMED** |
+| `lib32-vulkan-swrast` (multilib 1:26.2.5-1) | H[vm]:51 | 32-bit lavapipe (H:51) | mesa-vulkan-drivers:i386 | 25.0.7-2+deb13u1 | 26.1.6-1~bpo13+1 | 26.1.6-1 | 26.2.5-1 | 26.0.8-1ubuntu0.3 | **REPLACED-BY** multiarch i386. |
+
+**As-is on Debian:** PARTIAL — everything but NVIDIA maps by name; NVIDIA is too old on Debian.
+
+**Port steps:**
+1. Keep the four profiles; map sections to Debian names: [amd] `amd64-microcode mesa-vulkan-drivers mesa-vulkan-drivers:i386`; [intel] `intel-microcode mesa-vulkan-drivers mesa-vulkan-drivers:i386 intel-media-va-driver-non-free`; [vm] `mesa-vulkan-drivers mesa-vulkan-drivers:i386`; [nvidia] see the NVIDIA question.
+2. Before any `:i386` install: `dpkg --add-architecture i386 && apt-get update` in the target (Arch multilib → Debian multiarch).
+3. Enable `contrib non-free non-free-firmware` (Debian) / `restricted multiverse` (Ubuntu) in the target sources.
+4. Replace the pacman hook written by `nvidia.sh:252-253` with a dpkg trigger / `/etc/kernel/postinst.d` script (owned by the hardware section).
+
+**Complexity:** Medium — trivial renames except the NVIDIA source decision.
+
+**Issues / risks:**
+- Debian's NVIDIA driver is 550.163 in trixie, trixie-backports, forky and sid (555.58 only in experimental) vs Arch 615.78: RTX 50 (Blackwell) needs ≥ 570, so those GPUs have no Debian-archive driver; Ubuntu resolute ships 615.71 open.
+- Debian microcode is loaded by initramfs-tools hooks shipped in `amd64-microcode`/`intel-microcode`; the mkinitcpio `microcode` hook referenced at `hardware.packages:36-39` does not exist there.
+
+**Questions for the human:**
+- NVIDIA on a Debian base: (a) Debian archive `nvidia-driver` 550 — signed by Debian, no RTX 50 support; (b) NVIDIA's CUDA APT repo for debian13 — current open driver, third-party repo, its own package names (`nvidia-open`, `cuda-drivers`) that the profile list and `nvidia.sh` must target; (c) port-built debs from NVIDIA's .run — maximum control, the port carries driver packaging.
+
+---
+
+### Dev toolchains (`system/packages/dev.packages`)
+
+**What it does:** language runtimes "installed by pacstrap with the base set so every machine is dev-ready" (dev.packages:1-3; README.md:24-25). 7 lines.
+
+**Arch couplings:** `pacstrap.sh:65-69` appends it to the pacstrap list; `offline-repo.sh:53` bakes it; the release manifest carries it as `dev` (`manifest.go:29`).
+
+**Dependencies:**
+
+| Arch pkg (Arch ver) | Sets | Provides in Ryoku (cite) | Debian / Ubuntu pkg(s) | trixie | trixie-bpo | forky | sid | resolute | Status: min version / why |
+|---|---|---|---|---|---|---|---|---|---|
+| `go` (extra 2:1.27.2-1) | D:5 · U:19 make · UH:21 make · UN:22 make | Go toolchain on every box (D:5) and package build (U:19 make; UH:21; UN:22) | golang-go (or golang-1.26) | 2:1.24~2 | 2:1.27~1~bpo13+1 | 2:1.27~1 | 2:1.27~1 | 2:1.26~1 | **RENAMED** OLDER on trixie: go.mod requires go 1.26 / 1.26.4 with toolchain go1.26.5 (installation/tui/go.mod, ryoku/hub/backend/go.mod, ryoku/shell/ipc/go.mod); trixie golang-go 1.24; trixie-bpo golang-go 2:1.27 + golang-1.26 1.26.9; forky/sid 1.27; resolute golang-go 1.26 (golang-1.26 1.26.8). |
+| `nodejs` (extra 26.12.0-1) | D:6 | Node runtime (D:6) | nodejs | 20.19.2+dfsg-1+deb13u2 | - | 24.21.0+dfsg+~cs24.13.4-1 | 24.22.0+dfsg+~cs24.19.2-1 | 22.22.1+dfsg+~cs22.19.15-1ubuntu1 (univ) | **SAME** trixie 20.19, resolute 22.22, forky/sid 24.2x, Arch 26.12. |
+| `npm` (extra 12.2.1-1) | D:7 | npm with Ryoku ~/.npmrc prefix (D:7; deploy.sh:13) | npm | 9.2.0~ds1-3 | - | 12.2.0+ds1-1 | 12.2.0+ds1-1 | 9.2.0~ds3-1 (univ) | **SAME** trixie/resolute 9.2.0, forky/sid 12.2.0 = Arch 12.2.1. |
+| `python-pip` (extra 26.2.1-1) | D:9 | pip (D:9; ryoku/apps/pip) | python3-pip | 25.1.1+dfsg-1 | - | 26.1.2+dfsg-2 | 26.1.2+dfsg-2 | 25.1.1+dfsg-1ubuntu2 (univ) | **RENAMED** Debian marks the system interpreter EXTERNALLY-MANAGED (PEP 668), as Arch does. |
+| `python-pipx` (extra 1.15.0-1) | D:10 | pipx (D:10) | pipx | 1.7.1-1 | - | 1.15.0-1 | 1.15.0-1 | 1.8.0-1 (univ) | **RENAMED** trixie 1.7.1, Arch 1.15.0. |
+| `mise` (extra 2026.10.12-1) | D:11 | polyglot runtime manager (D:11) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/jdx/mise v2026.10.13 (Arch 2026.10.12); upstream publishes its own APT repo (mise.jdx.dev/deb) and static binaries; cargo needs rust 1.95. |
+
+Also in this set, mapped in an earlier table (row cites this set too): `python`.
+
+**As-is on Debian:** PARTIAL — Go is too old on trixie main and mise is not packaged.
+
+**Port steps:**
+1. Map to `golang-go nodejs npm python3 python3-pip pipx` (+ `mise`, port-built or from mise's own APT repo).
+2. On trixie take `golang-go` from trixie-backports (`2:1.27~1~bpo13+1`, or `golang-1.26` 1.26.9): `installation/tui/go.mod` and `ryoku/hub/backend/go.mod` require `go 1.26.4`, `ryoku/shell/ipc/go.mod` `toolchain go1.26.5`.
+
+**Complexity:** Low.
+
+**Issues / risks:** Node is 20.19 on trixie, 22.22 on resolute, 24.2x on forky/sid vs Arch 26.12; no Ryoku `package.json` declares `engines` (`ryoku/rashin/backend/web/js/package.json` has none).
+
+---
+
+### AUR set (`system/packages/aur.packages`)
+
+**What it does:** packages "NOT installed by pacstrap … built via an AUR helper during post-install: online-only and best-effort" (aur.packages:1-4). 10 lines.
+
+**Arch couplings:**
+- `installation/backend/lib/aur.sh:31-136`: bootstraps `yay-bin` from the AUR (fallback: GitHub release binary, `:69-100`), drops a NOPASSWD sudoers file (`:56-60`), builds as the user with `arch-chroot … runuser … yay -S` under `timeout` (`:107-125`). Offline installs skip it (`:43-46`) and install the baked copies via `ryoku_offline_aur` (`installation/backend/lib/offline.sh:175`); `offline-repo.sh:231-251,414` builds every AUR entry into the offline repo.
+- `aur.sh:21` `CRITICAL=(limine-mkinitcpio-hook limine-snapper-sync)` front-runs two names that are no longer in aur.packages (they moved to base.packages:33-34 and ship from `[ryoku]`), so the "boot-critical first" pass now only re-checks packages pacstrap already installed.
+- `aur.sh:138-140` `ryoku_default_browser` points http/https at Zen only if `zen-browser-bin` landed.
+- Release manifest lane `aur` (`manifest.go:31`); `manifest.go:117-133` marks `pam-fprint-grosshack` opt-in (installed by `reconcileFingerprintModule` only on boxes with a reader).
+- Tests empty the file to skip it (`installation/tests/install-vm.py:192`, `install-dualboot-vm.py:746`).
+
+**Dependencies:**
+
+| Arch pkg (Arch ver) | Sets | Provides in Ryoku (cite) | Debian / Ubuntu pkg(s) | trixie | trixie-bpo | forky | sid | resolute | Status: min version / why |
+|---|---|---|---|---|---|---|---|---|---|
+| `yay-bin` (AUR 13.0.1-1) | A:7 | AUR helper bootstrapped first (A:6-7; aur.sh:69-100) | (none) | - | - | - | - | - | **NOT-NEEDED-ON-DEBIAN** No AUR on Debian: every aur.packages entry becomes a .deb the port builds and serves from its own APT repo (or an upstream .deb). |
+| `phinger-cursors` (AUR 2.2-1) | A:19 | cursor picker extra (A:18-19) | phinger-cursor-theme (Ubuntu only, 1.1) | - | - | - | - | 1.1-0ubuntu2 (univ) | **MISSING-BUILD** github.com/phisch/phinger-cursors v2.2 (AUR 2.2) prebuilt phinger-cursors-variants.tar.bz2; Ubuntu's 1.1 is two majors behind. |
+| `catppuccin-cursors-mocha` (AUR 2.0.0-1) | A:24 | cursor picker extra (A:23-24) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/catppuccin/cursors v2.0.0 prebuilt catppuccin-mocha-*-cursors.zip. |
+| `apple_cursor` (AUR 2.0.1-1) | A:27 | cursor picker extra (A:25-27) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/ful1e5/apple_cursor v2.0.1 prebuilt macOS.tar.xz (the AUR recipe rebuilds via clickgen, A:25-26). |
+| `nvibrant-bin` (AUR 1.3.0-1) | A:35 | NVIDIA digital vibrance for the DISPLAY saturation fader (A:33-35; Devices.qml:7) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/Tremeschin/nVibrant v1.3.0 ships only nvibrant-1.3.0-py3-none-manylinux_2_17_x86_64.whl. |
+| `localsend-bin` (AUR 1.18.2-2) | A:38 | LAN file sharing the stash speaks (A:37-38; localsend.sh:3) | (none) | - | - | - | - | - | **MISSING-BUILD** upstream release ships LocalSend-1.18.2-linux-x86-64.deb (github.com/localsend/localsend v1.18.2 = AUR 1.18.2). |
+| `voxtype-bin` (AUR 1.1.1-1) | A:45 | offline Whisper dictation daemon (A:42-45) | (none) | - | - | - | - | - | **MISSING-BUILD** upstream release ships voxtype_1.1.1-1_amd64.deb (github.com/peteonrails/voxtype v1.1.1 = AUR 1.1.1). |
+| `ttf-fraunces-variable` (AUR 1.000-1) | A:52 | Fraunces headline serif (A:47-52) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/undercasetype/Fraunces 1.000 release zip (AUR pkgbase fraunces-font 1.000). |
+| `zen-browser-bin` (AUR 1.23.2b-1) | A:60 | default browser on fresh installs (A:54-60; aur.sh:138-140 ryoku_default_browser) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/zen-browser/desktop 1.23.3b zen.linux-x86_64.tar.xz (AUR 1.23.2b, flagged out of date); no upstream deb. |
+| `pam-fprint-grosshack` (AUR 0.3.0-1) | A:70 | touch-or-type fingerprint unlock at qylock + SDDM (A:62-70) | (none; libpam-fprintd is the stock module without concurrent password entry) | - | - | - | - | - | **MISSING-BUILD** gitlab.com/mishakmak/pam-fprint-grosshack v0.3.0; meson; runtime fprintd (Debian 1.94.5). |
+
+**As-is on Debian:** NO — the AUR does not exist; every entry needs a deb.
+
+**Port steps:**
+1. Drop `yay-bin` and the whole `aur.sh` build stage; serve these as debs from the port's own signed APT repo (or the upstream repos/debs noted per row), installed by apt in the same transaction as the rest (online/offline alike).
+2. Repackage the two upstream .debs as-is (LocalSend `LocalSend-1.18.2-linux-x86-64.deb`, Voxtype `voxtype_1.1.1-1_amd64.deb`); build the rest per the MISSING-BUILD list.
+3. Keep the default-browser step keyed on Zen's .desktop id from the port's Zen deb.
+
+**Complexity:** Medium — all are prebuilt-asset repackages except pam-fprint-grosshack (meson); none is a large build.
+
+**Issues / risks:** zen-browser-bin was flagged out of date on the AUR on the query date (AUR 1.23.2b vs upstream 1.23.3b). nvibrant ships only a Python wheel (`nvibrant-1.3.0-py3-none-manylinux_2_17_x86_64.whl`), so its deb is a Python-package build, not a binary drop.
+
+---
+
+### CachyOS layer (`system/packages/cachyos.packages`)
+
+**What it does:** the CachyOS kernel, tuning, auto-nice, sched-ext schedulers and Proton, pacstrapped "on every target" of the cachyos ISO variant (cachyos.packages:1-11). 11 lines.
+
+**Arch couplings:** `pacstrap.sh:71-79` adds it only when `RYOKU_VARIANT == cachyos` (variant marker baked by `installation/iso/build.sh:58-62,194`, read at `installation/backend/ryoku-install:94-99`); `ryoku-install:197` wires the CachyOS repos into the target (`installation/backend/lib/cachyos.sh`, which also enables `[multilib]`, `:43-45`); `installation/backend/lib/bootloader.sh:163,358,648` boot `linux-cachyos` instead of `linux`; `offline-repo.sh:55,466` bakes the set. The separate kernel-only opt-in is `system/extras/ryoku-pkg-cachyos`.
+
+**Dependencies:**
+
+| Arch pkg (Arch ver) | Sets | Provides in Ryoku (cite) | Debian / Ubuntu pkg(s) | trixie | trixie-bpo | forky | sid | resolute | Status: min version / why |
+|---|---|---|---|---|---|---|---|---|---|
+| `linux-cachyos` (cachyos 7.2.7-1) | C:14 | cachyos-variant default kernel (C:11-15; bootloader.sh:163) | (none) | - | - | - | - | - | **MISSING-BUILD** CachyOS 7.2.7 (BORE + sched-ext); route: CachyOS kernel patches over the kernel.org tarball, `make bindeb-pkg`. |
+| `linux-cachyos-headers` (cachyos 7.2.7-1) | C:15 | headers for DKMS on the cachyos kernel (C:15) | (none) | - | - | - | - | - | **MISSING-BUILD** produced by the same `make bindeb-pkg` run (linux-headers-<ver>). |
+| `cachyos-keyring` (cachyos 20240331-1) | C:20 | offline pacman-key trust for [cachyos*] (C:17-20) | (none) | - | - | - | - | - | **NOT-NEEDED-ON-DEBIAN** apt uses a `signed-by=` keyring file for whichever repo carries the kernel debs. |
+| `cachyos-mirrorlist` (cachyos 27-1) | C:21 | mirrorlist for [cachyos] Include (C:21) | (none) | - | - | - | - | - | **NOT-NEEDED-ON-DEBIAN** apt sources entry. |
+| `cachyos-v3-mirrorlist` (cachyos 27-1) | C:22 | mirrorlist for x86-64-v3 repos (C:22) | (none) | - | - | - | - | - | **NOT-NEEDED-ON-DEBIAN** Debian has no x86-64-v3 rebuild archive. |
+| `cachyos-v4-mirrorlist` (cachyos 27-1) | C:23 | mirrorlist for x86-64-v4 repos (C:23) | (none) | - | - | - | - | - | **NOT-NEEDED-ON-DEBIAN** as above. |
+| `cachyos-settings` (cachyos 1:1.4.1-1) | C:27 | CachyOS sysctl/udev/modprobe/systemd tuning (C:25-27) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/CachyOS/CachyOS-Settings 1.4.1 (file tree); Arch deps zram-generator inxi ananicy-cpp (cachyos.db) -> Debian systemd-zram-generator, inxi. |
+| `ananicy-cpp` (extra 1.2.0-1) | C:31 | auto-nice daemon (C:29-31) | (none) | - | - | - | - | - | **MISSING-BUILD** gitlab.com/ananicy-cpp/ananicy-cpp v1.2.0 (Arch extra 1.2.0); cmake. |
+| `cachyos-ananicy-rules` (cachyos 1:1.1.49-1) | C:32 | CachyOS ananicy ruleset (C:32) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/CachyOS/ananicy-rules 1.1.49; rule files only. |
+| `scx-scheds` (extra 1.1.3-2) | C:36 | sched-ext userspace schedulers (C:34-36) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/sched-ext/scx v1.1.4 (Arch 1.1.3); meson + cargo + clang/libbpf; needs CONFIG_SCHED_CLASS_EXT (not set in trixie 6.12; set in sid 7.2). |
+| `proton-cachyos-slr` (cachyos 1:11.0.20261014-1) | C:47 | CachyOS Proton in the system compat-tools path (C:38-47) | (none) | - | - | - | - | - | **MISSING-BUILD** upstream github.com/CachyOS/proton-cachyos release cachyos-11.0-20261014-slr tarball repackaged under /usr/share/steam/compatibilitytools.d; Arch package depends on lib32-* (multiarch i386 on Debian). |
+
+**As-is on Debian:** NO — nothing in this set exists for Debian or Ubuntu.
+
+**Port steps:** depend on the CachyOS question below; for the "build it" option:
+1. Kernel: kernel.org 7.2.x tarball + CachyOS patch set, Debian kernel config as seed, `make bindeb-pkg` → `linux-image-*` + `linux-headers-*` debs in the port repo (prior art for a CI-built custom-kernel deb channel: `~/src/hyprdebian-kernel`, per the machine notes).
+2. `cachyos-settings` → deb of the CachyOS-Settings file tree with Depends `systemd-zram-generator inxi ananicy-cpp`; `ananicy-cpp` (cmake) + `cachyos-ananicy-rules` (files); `scx-scheds` (meson+cargo+libbpf); `proton-cachyos` tarball → `/usr/share/steam/compatibilitytools.d`.
+3. Replace keyring/mirrorlist packages with one apt source + `signed-by` keyring for the port repo.
+
+**Complexity:** High — a maintained kernel deb channel plus four userland packages.
+
+**Issues / risks:** trixie's 6.12 kernel is built without sched_ext (`# CONFIG_SCHED_CLASS_EXT is not set` in this host's `/boot/config-6.12.113+deb13-amd64`), so `scx-scheds` cannot run on the stock trixie kernel; Debian sid's 7.2 kernel has `CONFIG_SCHED_CLASS_EXT=y` (linux 7.2.11-1 `debian/config/config:6318`). The CachyOS x86-64-v3/v4 optimisation has no Debian archive equivalent.
+
+**Questions for the human:**
+- CachyOS variant on Debian: (a) drop it — one ISO, plain Debian kernel; (b) port it — the port builds and tracks a CachyOS-patched kernel deb every upstream release plus 4 userland debs; (c) keep the variant but with Debian's own kernel from backports/forky/sid (sched_ext present, no BORE patches) plus port-built scx-scheds/ananicy-cpp/cachyos-settings.
+
+---
+
+### Live ISO set (`installation/iso/packages.x86_64`)
+
+**What it does:** the archiso live environment only; "the packages for the target system are installed by the backend with pacstrap" (packages.x86_64:1-6; installation/iso/README.md:62-69). 40 lines.
+
+**Arch couplings:** consumed by archiso `mkarchiso` via the profile staged at `installation/iso/build.sh:133`; `mkinitcpio-archiso` provides the squashfs-finding hooks (`packages.x86_64:13-15`); `reflector` ranks mirrors for `installation/backend/lib/mirrors.sh` (`packages.x86_64:38-41`); `arch-install-scripts` gives pacstrap/arch-chroot/genfstab (`:23-24`); `ryoku-cursors` comes from a local `[ryoku]` file:// mirror (`:62-66`). `installation/backend/lib/i18n.sh:14-16` relies on `jq` being in both the live set and the base set.
+
+**Dependencies:**
+
+| Arch pkg (Arch ver) | Sets | Provides in Ryoku (cite) | Debian / Ubuntu pkg(s) | trixie | trixie-bpo | forky | sid | resolute | Status: min version / why |
+|---|---|---|---|---|---|---|---|---|---|
+| `mkinitcpio-archiso` (extra 73-1) | I:15 | archiso initramfs hooks that find/mount the squashfs (I:13-15) | live-boot live-config (Debian live); casper (Ubuntu) | 1:20250815~deb13u1 | - | 1:20250815 | 1:20250815 | 1:20250815 (univ) | **NOT-NEEDED-ON-DEBIAN** Debian Live: live-boot initramfs-tools hooks (live-build), Ubuntu: casper. |
+| `syslinux` (core 6.04.pre3.r3.g05ac953c-5) | I:21 | BIOS boot of the ISO (I:19-21) | syslinux isolinux syslinux-common | 3:6.04~git20190206.bf6db5b4+dfsg1-3.1 | - | 3:6.04~git20190206.bf6db5b4+dfsg1-3.2 | 3:6.04~git20190206.bf6db5b4+dfsg1-3.2 | 3:6.04~git20190206.bf6db5b4+dfsg1-3.2ubuntu1 (univ) | **SPLIT** isolinux.bin is in the separate isolinux deb; UEFI side (systemd-boot from systemd on Arch) is systemd-boot on Debian. |
+| `arch-install-scripts` (extra 31-2) | I:24 | pacstrap, arch-chroot, genfstab (I:23-24; pacstrap.sh:103,130; aur.sh:70) | arch-install-scripts + mmdebstrap/debootstrap | 28-1 | 31-1~bpo13+1 | 31-1 | 31-1 | 31-1 (univ) | **REPLACED-BY** Debian packages arch-install-scripts (28 trixie, 31 bpo/forky/sid): arch-chroot and genfstab work as-is; pacstrap needs pacman, so the target install becomes mmdebstrap/debootstrap. |
+| `parted` (extra 3.8-1) | I:25 | partitioning (I:25) | parted | 3.6-5 | - | 3.8-2 | 3.8-2 | 3.6-6 | **SAME** |
+| `gptfdisk` (extra 1.0.10-2) | I:26 | sgdisk (I:26) | gdisk | 1.0.10-2+b1 | - | 1.0.10-3 | 1.0.10-3 | 1.0.10-2build1 | **RENAMED** |
+| `e2fsprogs` (core 1.47.4-1) | I:30 | ext4 tools (I:30) | e2fsprogs | 1.47.2-3+b12 | - | 1.47.4-1+b2 | 1.47.4-1+b2 | 1.47.2-3ubuntu4 | **SAME** |
+| `ntfsprogs` (extra 2026.9.28-1) | I:34 | ntfsresize/mkntfs for the Windows carve (I:31-34) | ntfs-3g | 1:2022.10.3-5+deb13u2 | - | 1:2026.9.28-2 | 1:2026.9.28-2 | 1:2022.10.3-5ubuntu1.1 | **RENAMED** Debian ntfs-3g ships /usr/sbin/ntfsresize, mkntfs, mkfs.ntfs (no ntfsprogs split). |
+| `ntfs-3g` (extra 2026.9.28-1) | I:35 | NTFS FUSE driver (I:35) | ntfs-3g | 1:2022.10.3-5+deb13u2 | - | 1:2026.9.28-2 | 1:2026.9.28-2 | 1:2022.10.3-5ubuntu1.1 | **SAME** trixie 2022.10.3, forky/sid 2026.9.28 = Arch. |
+| `reflector` (extra 2023-5) | I:41 | mirror ranking before pacstrap (I:38-41; lib/mirrors.sh) | (none; netselect-apt on Debian only) | - | - | - | - | - | **NOT-NEEDED-ON-DEBIAN** deb.debian.org / archive.ubuntu.com CDNs; netselect-apt exists in Debian (not Ubuntu). Prior art: debian13-stripped engine.sh netselect + InRelease probe. |
+| `kbd` (core 2.10.0-1) | I:53 | `localectl list-keymaps` + loadkeys for the keyboard step (I:52-53) | kbd console-data (keymaps) console-setup keyboard-configuration | 2.7.1-2 | - | 2.10.0-1+b1 | 2.10.0-1+b1 | 2.7.1-2ubuntu2 | **SPLIT** Debian kbd ships 0 files under /usr/share/keymaps; console-data ships the 253 keymap files localectl lists. |
+| `cage` (extra 0.3.1-1) | I:58 | installer kiosk compositor (I:55-58) | cage | 0.2.0-2 | - | 0.3.1-1 | 0.3.1-1 | 0.2.1-1 (univ) | **SAME** trixie 0.2.0, forky/sid 0.3.1 = Arch. |
+| `foot` (extra 1.28.0-2) | I:59 | installer terminal (I:59) | foot | 1.21.0-2 | - | 1.28.0-1 | 1.28.0-1 | 1.25.0-1 (univ) | **SAME** |
+| `ryoku-cursors` ([ryoku] 2.0.7) | I:66 · U:80 | Bibata cursors, desktop default and installer kiosk pointer (U:73-80; I:62-66) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku-cursors from upstream Bibata v2.0.7 prebuilt tarball. |
+| `less` (core 1:710-1) | I:73 | pager (I:73) | less | 668-1 | - | 710+really668-1 | 710+really668-1 | 668-1build1 | **SAME** |
+| `vim` (extra 9.2.1178-1) | I:74 | editor on the ISO (I:74) | vim | 2:9.1.1230-2 | - | 2:9.2.0858-1 | 2:9.2.0858-1 | 2:9.1.2141-1ubuntu4.9 | **SAME** |
+| `openssl` (core 3.6.5-1) | I:81 | `openssl passwd -6` for manual installs (I:76-81) | openssl | 3.5.7-1~deb13u2 | - | 3.6.5-1 | 3.6.5-1 | 3.5.5-1ubuntu3.7 | **SAME** |
+| `mdadm` (core 4.6-2) | I:91 | MD RAID probing (I:90-91) | mdadm | 4.4-11 | - | 4.6-3 | 4.6-3 | 4.5-5ubuntu1.1 | **SAME** |
+| `lvm2` (core 2.03.43-2) | I:93 | LVM probing (I:92-93) | lvm2 | 2.03.31-2 | - | 2.03.31-2+b2 | 2.03.31-2+b2 | 2.03.31-2ubuntu3 | **SAME** |
+
+Also in this set, mapped in an earlier table (row cites this set too): `base`, `linux`, `linux-firmware`, `mkinitcpio`, `amd-ucode`, `intel-ucode`, `btrfs-progs`, `dosfstools`, `cryptsetup`, `efibootmgr`, `limine`, `networkmanager`, `iwd`, `wpa_supplicant`, `wireless-regdb`, `xorg-xwayland`, `ttf-jetbrains-mono-nerd`, `git`, `curl`, `jq`, `sudo`, `pciutils`.
+
+**As-is on Debian:** PARTIAL — the userland maps by name; the archiso/pacman machinery does not exist.
+
+**Port steps:**
+1. Build the live image with live-build (`live-boot` + `live-config` initramfs hooks) or mmdebstrap + squashfs; Ubuntu: casper.
+2. Replace `reflector` with deb.debian.org / archive.ubuntu.com, or the netselect + InRelease probe already written in `debian13-stripped` `engine.sh` (machine notes).
+3. Add `console-data` so `localectl list-keymaps` has data (Debian `kbd` ships no files under `/usr/share/keymaps`; `console-data` ships 253).
+4. Include `debootstrap`/`mmdebstrap` and Debian's `arch-install-scripts` (arch-chroot, genfstab) for the backend.
+5. Port-build `limine`, `ttf-jetbrains-mono-nerd`, `ryoku-cursors` for the live image.
+
+**Complexity:** Medium.
+
+**Issues / risks:** `ntfsprogs` has no separate deb: Debian's `ntfs-3g` ships `/usr/sbin/ntfsresize`, `mkntfs`, `mkfs.ntfs`. `syslinux`'s `isolinux.bin` is in the separate `isolinux` deb.
+
+---
+
+### Umbrella packages (`release/packages/ryoku-desktop/PKGBUILD`, `ryoku-desktop-hyprland/PKGBUILD`, `ryoku-desktop-niri/PKGBUILD`)
+
+**What it does:** `ryoku-desktop` is the compositor-neutral base whose hard depends are "tools the shell calls by name" (`ryoku-desktop/PKGBUILD:91-95,100`), user apps are optdepends delivered once by `ryoku doctor` (`:211-213`); a compositor variant provides the `ryoku-desktop-compositor` virtual (`:34-36`). Installed by `installation/backend/lib/deploy.sh:126` (`ryoku-keyring ryoku-desktop ryoku-desktop-$RYOKU_COMPOSITOR`, plus `asusctl` when `ryoku-hw-asus-aura` matches, `:127-134`). 130 array entries (ryoku-desktop 76 depends / 5 makedepends / 31 optdepends; -hyprland 11 + 1; -niri 5 + 1).
+
+**Arch couplings:** pacman versioned depends `"ryoku-shell=$pkgver"` etc. (`:21-31`) map to Debian `ryoku-shell (= ${binary:Version})`-style Depends; `optdepends` has no Debian equivalent with the "never reinstalled" property the comment relies on (`:91-95`) — Debian `Recommends:` are installed by default together with the package (and apt installs Recommends newly added in an upgrade), `Suggests:` are never installed automatically; the doctor's provisioned list (`ryokumanifest/manifest.go:161-181` `Apps()`, projected by `generate.go:99-107` `AppNames`) is what actually delivers those apps. `ryoku/wm/hyprland/caps.go:67-78` and `ryoku/wm/niri/caps.go:73-80` repeat the compositor package lists for the manifest's compositor lane.
+
+**Dependencies:**
+
+| Arch pkg (Arch ver) | Sets | Provides in Ryoku (cite) | Debian / Ubuntu pkg(s) | trixie | trixie-bpo | forky | sid | resolute | Status: min version / why |
+|---|---|---|---|---|---|---|---|---|---|
+| `cmake` (extra 4.4.4-1) | U:19 make | builds compiled ryoku/apps apps (U:18-19 make) | cmake | 3.31.6-2 | 4.3.4-1~bpo13+1 | 4.3.4-1 | 4.3.4-1 | 4.2.3-2ubuntu2 | **SAME** |
+| `ninja` (extra 1.13.2-3) | U:19 make | cmake generator (U:19 make) | ninja-build | 1.12.1-1+b1 | - | 1.13.2-1+b1 | 1.13.2-1+b1 | 1.13.2-1 (univ) | **RENAMED** |
+| `qt6-base` (extra 6.12.0-3) | U:19 make | Qt build headers (U:19 make) | qt6-base-dev | 6.8.2+dfsg-9+deb13u2 | - | 6.11.2+dfsg-5 | 6.11.2+dfsg-6 | 6.10.2+dfsg-7 (univ) | **RENAMED** Qt-baseline bound; ryoku-blobs additionally needs ShaderTools (ryoku/shell/plugin/CMakeLists.txt:18) -> qt6-shadertools-dev. |
+| `ryoku-shell` ([ryoku] monorepo) | U:25 | Ryoku shell QML + daemon (U:25) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** Ryoku monorepo package, release/packages/ryoku-shell; pinned to the shared RYOKU_PKGVER (U:21-24). |
+| `ryoku-hub` ([ryoku] monorepo) | U:26 | Ryoku Settings hub (U:26) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku-hub. |
+| `ryoku-rashin` ([ryoku] monorepo) | U:27 | rashin assistant backend (U:27) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku-rashin. |
+| `ryoku-blobs` ([ryoku] monorepo) | U:28 | compiled QML plugin (U:28; ryoku/shell/plugin/CMakeLists.txt) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku-blobs; installs into the Qt6 QML dir (Debian /usr/lib/x86_64-linux-gnu/qt6/qml). |
+| `ryoku` ([ryoku] monorepo) | U:29 | `ryoku` CLI (update/doctor) (U:29) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku. |
+| `ryoku-keyring` ([ryoku] 20260620) | U:30 | pacman keyring for [ryoku] (U:30; deploy.sh:126) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** becomes an APT archive-keyring deb (/usr/share/keyrings/…gpg referenced by signed-by=). |
+| `ryoku-oh-my-zsh` ([ryoku] monorepo) | U:31 | vendored oh-my-zsh (U:31) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku-oh-my-zsh (ohmyzsh commit 4b65740). |
+| `gpk` ([ryoku] 0.6.10) | U:33 | GlazePKG, "the RyokuArch package manager" (U:32-33) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/neur0map/glazepkg v0.6.10 (Go; the [ryoku] recipe installs the upstream release binary gpk-linux-amd64); upstream supports apt among 46 managers; [ryoku] PKGBUILD depends=('pacman') -> apt. |
+| `ryoku-desktop-compositor` (virtual) | U:36 | virtual the compositor variant provides (U:34-36; UH/UN provides) | (deb virtual) | - | - | - | - | - | **REPLACED-BY** Debian virtual packages work the same way: `Provides: ryoku-desktop-compositor` in ryoku-desktop-hyprland/-niri, `Depends:` in ryoku-desktop. |
+| `qt6-imageformats` (extra 6.12.0-1) | U:49 | WebP/AVIF decoders for RyoStore art (U:44-49) | qt6-image-formats-plugins | 6.8.2-4 | - | 6.11.2-2 | 6.11.2-2 | 6.10.2-1 (univ) | **RENAMED** Qt-baseline bound. |
+| `adw-gtk-theme` (extra 6.5-1) | U:64 | adw-gtk3(-dark) theme fed by Ryoku's named colours (U:58-64) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/lassekongo83/adw-gtk3 v6.5 = Arch 6.5; release tarball is prebuilt (meson+sassc to build from source). |
+| `ryoku-cursor-material` ([ryoku] 1.0.0) | U:85 | Material Bibata toggle (U:81-85) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku-cursor-material. |
+| `syntax-highlighting` (extra 6.31.0-1) | U:90 | org.kde.syntaxhighlighting code blocks in the Super+S chat (U:88-90) | qml6-module-org-kde-syntaxhighlighting libkf6syntaxhighlighting6 | 6.13.0-1 | - | 6.30.0-1 | 6.30.0-1 | 6.24.0-0ubuntu1 (univ) | **SPLIT** KF6 6.13 on trixie is built on Qt 6.8.2 (Qt-baseline bound). |
+| `ryogami` ([ryoku] monorepo) | U:131 | wallpaper daemon (U:125-131) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryogami. |
+| `zenity` (extra 4.2.2-1) | U:145 | file/folder chooser (U:144-145; ryoshot SettingsPanel.qml:25) | zenity | 4.1.90-1 | - | 4.2.2-1 | 4.2.2-1 | 4.2.1-1 | **SAME** |
+| `pam-u2f` (extra 1.4.0-2) | U:160 | FIDO2 enrollment + PAM (U:157-160; securitykey/set.go:23) | libpam-u2f pamu2fcfg | 1.4.0-1 | - | 1.4.0-3+b2 | 1.4.0-3+b2 | 1.4.0-3build1 (univ) | **SPLIT** pamu2fcfg is its own deb on Debian. |
+| `ryotunes` ([ryoku] GitHub-release import) | U:223 opt | music app the now-playing widget follows (U:223 opt) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** imported from its own GitHub release channel (release/repo/build-repo.sh:202-204); Tauri + libmpv build (release/repo/build-toolchain.packages:81). |
+| `ryomotion` ([ryoku] 1.5.0) | U:224 opt | screen-demo recorder/editor (U:224 opt) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryomotion (github.com/ryoku-dev/ryomotion 1.5.0). |
+| `pavucontrol` (extra 1:6.2-1) | U:226 opt | bar "Open audio" mixer (U:226 opt; window_rules.lua:38) | pavucontrol | 6.1-1 | - | 6.1-1+b1 | 6.1-1+b1 | 6.1-1build1 (univ) | **SAME** |
+| `kdialog` (extra 26.08.2-1) | U:233 opt | folder-picker fallback (U:233 opt; SettingsPanel.qml:25) | kdialog | 4:25.04.0-1 | - | 4:26.04.0-1 | 4:26.04.0-1 | 4:25.12.3-0ubuntu1 (univ) | **SAME** |
+| `plasma-integration` (extra 6.8.0-1) | U:234 opt | KDE platform theme option (U:234 opt) | plasma-integration | 6.3.6-1 | - | 6.7.4-1+b1 | 6.7.4-1+b1 | 6.6.5-0ubuntu0.1 (univ) | **SAME** |
+| `libvirt` (extra 1:12.8.0-1) | U:236 opt | passthrough VM management (U:236 opt; hwcaps.go:82) | libvirt-daemon-system libvirt-clients | 11.3.0-3+deb13u3 | - | 12.8.0-1 | 12.8.0-1 | 12.0.0-1ubuntu5.5 | **SPLIT** |
+| `swtpm` (extra 0.10.2-1) | U:238 opt | TPM 2.0 for Windows 11 VM (U:238 opt) | swtpm swtpm-tools | 0.7.1-1.5 | - | 0.10.2-2 | 0.10.2-2 | 0.10.1+ds-1ubuntu3 | **SPLIT** trixie 0.7.1, forky/sid 0.10.2 = Arch. |
+| `looking-glass` (AUR 2:B7-7) | U:239 opt | low-latency VM display (U:239 opt; hwcaps.go:282) | looking-glass-client | - | - | - | 0+b7+ds1-1 | - | **RENAMED** Debian sid only (0+b7); upstream github.com/gnif/LookingGlass B7 (AUR 2:B7); the kvmfr module the Hub also checks (hwcaps.go:588) is a separate dkms build. |
+| `quickemu` (AUR 4.9.9-2) | U:240 opt | ryovm VM builder (U:240 opt) | quickemu | 4.9.7-4 | - | 4.9.9-3 | 4.9.9-3 | 4.9.7-4build1 (univ) | **SAME** trixie 4.9.7, forky/sid 4.9.9 = AUR. |
+| `libisoburn` (extra 1.5.8.2-1) | U:241 opt | cloud-init seed ISO (U:241 opt; ryovm:691) | xorriso | 1.5.6-1.2+b1 | - | 1.5.8.pl02-2 | 1.5.8.pl02-2 | 1:1.5.6-1.1ubuntu4 | **RENAMED** |
+| `spice-gtk` (extra 0.42-5) | U:242 opt | SPICE viewer: `spicy` or `remote-viewer` (U:242 opt; ryovm:130) | spice-client-gtk virt-viewer | 0.42-3 | - | 0.42-4+b1 | 0.42-4+b1 | 0.42-4build1 (univ) | **SPLIT** remote-viewer is in virt-viewer. |
+| `asusctl` ([ryoku] 6.4.0 / extra 6.5.0-1) | U:243 opt | ASUS Aura lighting, added only when ryoku-hw-asus-aura detects it (U:243 opt; deploy.sh:126-133) | (none) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe 6.4.0 (github.com/OpenGamingCollective/asusctl; latest 6.5.0); cargo; rust-version 1.93. |
+| `qmk_hid` (-) | U:244 opt | QMK/VIA keyboard lighting (U:244 opt; 62-ryoku-qmk-hid.rules:2) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/FrameworkComputer/qmk_hid (tags only); cargo, edition 2024. |
+| `ryoku-desktop` ([ryoku] monorepo) | UH:23 · UN:24 | compositor-neutral desktop umbrella (UH:23; UN:24; deploy.sh:126) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku-desktop. |
+| `hyprland` (extra 0.56.2-4) | UH:25 | Hyprland compositor (UH:25; ryoku/wm/hyprland/caps.go:68) | hyprland | - | 0.55.2+ds-1~bpo13+1 | 0.56.2+ds-3 | 0.56.2+ds-3 | 0.53.3+ds-4 (univ) | **SAME** OLDER on trixie-bpo (0.55.2) and resolute (0.53.3): Ryoku's Lua config needs ≥ 0.55 (src/config/lua first appears at Hyprland v0.55.0) and the generated plugin keys target 0.56 (ryoku/wm/hyprland/config_plugins.go:244-245); forky/sid 0.56.2 = Arch. Prior art: debian13-stripped tools/build-debs.sh (22-component stack for trixie). |
+| `hypr-dynamic-cursors` ([ryoku] monorepo) | UH:29 | Hyprland cursor plugin (UH:29) | (port-built) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe from git github.com/VirtCode/hypr-dynamic-cursors, compiled against the exact Hyprland headers. |
+| `ryoku-hypr-plugins` ([ryoku] monorepo) | UH:30 | hyprwm/hyprland-plugins build (UH:30) | (port-built; Debian hyprland-plugins 0.53/0.56 exists) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku-hypr-plugins from github.com/hyprwm/hyprland-plugins git; Debian's hyprland-plugins (bpo 0.53.0, forky/sid 0.56.0) is version-locked to Debian's Hyprland. |
+| `hyprglass` ([ryoku] monorepo) | UH:31 | Hyprland glass plugin (UH:31; config_plugins.go:236-240) | (port-built) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe from github.com/hyprnux/hyprglass git (latest v0.10.0). |
+| `imgborders` ([ryoku] monorepo) | UH:32 | Hyprland image-border plugin (UH:32) | (port-built) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe from codeberg.org/zacoons/imgborders (vendored bundle). |
+| `ryoku-keysounds` ([ryoku] monorepo) | UH:33 | key sounds (mechvibes assets) (UH:33) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku-keysounds. |
+| `hyprpolkitagent` (extra 0.2.0-1) | UH:34 | polkit agent for Hyprland (UH:34) | hyprpolkitagent | - | 0.1.3-2~bpo13+1 | 0.2.0-1 | 0.2.0-1 | 0.1.3-1 (univ) | **SAME** trixie-bpo 0.1.3, forky/sid 0.2.0 = Arch, resolute 0.1.3; absent from trixie main. |
+| `xdg-desktop-portal-hyprland` (extra 1.4.1-2) | UH:35 | screencast/screenshot portal (UH:35) | xdg-desktop-portal-hyprland | - | 1.4.1-1~bpo13+1 | 1.4.1-1 | 1.4.1-1 | 1.3.11-1build2 (univ) | **SAME** trixie-bpo/forky/sid 1.4.1 = Arch; resolute 1.3.11; absent from trixie main. |
+| `hyprland-preview-share-picker` ([ryoku] 0.2.1.r9.ge2f30ff) | UH:38 | screenshare picker with previews (UH:38) | (none) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe pins github.com/WhySoBad/hyprland-preview-share-picker commit e2f30ff (0.2.1.r9); cargo. |
+| `hyprsunset` (extra 0.4.0-3) | UH:41 | night light on Hyprland (UH:41) | hyprsunset | - | 0.4.0-1~bpo13+1 | 0.4.0-1+b1 | 0.4.0-1+b1 | - | **SAME** trixie-bpo/forky/sid 0.4.0 = Arch; absent from trixie main and resolute. |
+| `niri` (extra 26.04-1) | UN:26 | niri compositor (UN:26; ryoku/wm/niri/caps.go:74) | (none; only rust-niri-ipc/niri-companion exist) | - | - | - | - | - | **MISSING-BUILD** github.com/YaLTeR/niri v26.04 = Arch 26.04; cargo; rust-version 1.87 (trixie 1.85 too old). |
+| `xwayland-satellite` ([ryoku] 0.8.2.r13.gadd2795 / extra 0.8.3-1) | UN:31 | X11 for niri (UN:31) | (none) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe pins github.com/Supreeeme/xwayland-satellite commit add2795 (0.8.2.r13; Arch 0.8.3); cargo; rust-version 1.85. |
+| `xdg-desktop-portal-gnome` (extra 51.0-1) | UN:34 | niri portal backend (UN:34) | xdg-desktop-portal-gnome | 48.0-2 | - | 50.0-1 | 50.0-1 | 50.0-0ubuntu1 | **SAME** |
+| `gammastep` (extra 2.0.11-2) | UN:37 | night light on niri (UN:37) | gammastep | 2.0.9-1+b2 | - | 2.0.11-1 | 2.0.11-1 | 2.0.9-2 (univ) | **SAME** |
+
+Also in this set, mapped in an earlier table (row cites this set too): `go`, `qt6-declarative`, `xorg-xwayland`, `qt6-wayland`, `qt5-wayland`, `qt6-5compat`, `qt6-svg`, `weston`, `xdg-desktop-portal-gtk`, `gnome-themes-extra`, `papirus-icon-theme`, `ryoku-cursors`, `quickshell`, `zsh`, `zsh-autosuggestions`, `zsh-history-substring-search`, `zsh-syntax-highlighting`, `brightnessctl`, `playerctl`, `mpv`, `mpv-mpris`, `yt-dlp`, `wl-clipboard`, `wl-clip-persist`, `cliphist`, `grim`, `slurp`, `cava`, `python`, `pipewire`, `jq`, `imagemagick`, `matugen`, `ffmpeg`, `curl`, `qt6-multimedia`, `iw`, `nftables`, `bluez`, `bluez-utils`, `rtkit`, `ttf-jetbrains-mono-nerd`, `inter-font`, `noto-fonts`, `noto-fonts-cjk`, `noto-fonts-emoji`, `ttf-material-symbols-variable`, `tesseract`, `tesseract-data-eng`, `zbar`, `gpu-screen-recorder`, `wf-recorder`, `wtype`, `libqalculate`, `upower`, `power-profiles-daemon`, `ddcutil`, `hypridle`, `hyprpicker`, `linux-headers`, `dkms`, `kitty`, `fish`, `blesh`, `starship`, `fastfetch`, `yazi`, `neovim`, `nautilus`, `nautilus-python`, `waifu2x-ncnn-vulkan`, `songrec`, `openrgb`, `gamescope`, `gamemode`, `mangohud`, `chromium`, `qemu-desktop`, `edk2-ovmf`.
+
+**As-is on Debian:** NO.
+
+**Port steps:**
+1. Translate each PKGBUILD's arrays to `debian/control` with the Debian names in the rows above (e.g. `xorg-xwayland`→`xwayland`, `bluez-utils`→`bluez`, `libqalculate`→`qalc`, `tesseract`→`tesseract-ocr`, `zbar`→`zbar-tools`, `pam-u2f`→`libpam-u2f, pamu2fcfg`, `qt6-*`→the qml6-module-*/libqt6* splits), add `pulseaudio-utils`, keep `Provides: ryoku-desktop-compositor` in the variants.
+2. Map `optdepends` to `Suggests:` (not installed, matches "never reinstalled") and keep the doctor-driven one-time delivery.
+3. Hyprland variant: package Hyprland ≥ 0.56 and its plugins built against those exact headers (prior art: `debian13-stripped/tools/build-debs.sh`, 22-component stack); niri variant: build `niri` and `xwayland-satellite` (cargo).
+4. Update the duplicated compositor lists in `caps.go` to Debian names.
+
+**Complexity:** High.
+
+**Issues / risks:**
+- Hyprland: Ryoku authors its config as Lua (AGENTS.md rule 2); Hyprland's `src/config/lua` first appears at v0.55.0 (absent in v0.54.3 and v0.53.3), and `ryoku/wm/hyprland/config_plugins.go:244-245` emits the 0.56 hyprfocus key names. trixie-backports (0.55.2) and resolute (0.53.3) are too old; forky/sid 0.56.2 = Arch.
+- Quickshell ≥ 0.3.0 (Networking, WindowManager, ShortcutInhibitor all "Added" in upstream `changelog/v0.3.0.md`; used at `ryoku/hub/quickshell/pages/ConnectionsPage.qml:7`, `ryoku/ui/Singletons/Wm.qml:6`, `ryoku/hub/quickshell/pages/KeybindsPage.qml:2053`); Quickshell links Qt private API, so it must be rebuilt with any Qt rebuild.
+- `gpk` (GlazePKG) depends on pacman in the `[ryoku]` recipe; upstream supports apt among 46 managers.
+- `looking-glass-client` exists only in Debian sid.
+
+---
+
+## Counts per status per set
+
+Counted per package line (a name in two sets counts in both); *unique names* counts each Arch name once.
+
+| Set | lines | SAME | RENAMED | SPLIT | OLDER | MISSING-BUILD | MISSING-BUILD (Ryoku-own) | NOT-NEEDED-ON-DEBIAN | REPLACED-BY |
+|---|---|---|---|---|---|---|---|---|---|
+| base | 145 | 78 | 30 | 14 | 0 | 19 | 0 | 3 | 1 |
+| hardware:amd | 3 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 1 |
+| hardware:intel | 4 | 0 | 3 | 0 | 0 | 0 | 0 | 0 | 1 |
+| hardware:nvidia | 2 | 0 | 0 | 0 | 2 | 0 | 0 | 0 | 0 |
+| hardware:vm | 2 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 1 |
+| dev | 7 | 2 | 4 | 0 | 0 | 1 | 0 | 0 | 0 |
+| aur | 10 | 0 | 0 | 0 | 0 | 9 | 0 | 1 | 0 |
+| cachyos | 11 | 0 | 0 | 0 | 0 | 7 | 0 | 4 | 0 |
+| iso | 40 | 20 | 8 | 4 | 0 | 2 | 1 | 4 | 1 |
+| umbrella | 130 | 60 | 21 | 13 | 0 | 19 | 16 | 0 | 1 |
+| **all lines** | 354 | 160 | 69 | 31 | 2 | 57 | 17 | 12 | 6 |
+| **unique names** | 248 | 102 | 46 | 21 | 2 | 46 | 15 | 10 | 6 |
+
+## MISSING-BUILD list (union over all bases)
+
+Every name that needs a port-built or repackaged deb on at least one base. "Needed on" uses T = trixie, B = trixie+backports, F = forky, S = sid, R = resolute.
+
+| Package | Upstream (version Arch/Ryoku ships) | Build system | One-line recipe | Needed on |
+|---|---|---|---|---|
+| limine | github.com/limine-bootloader/limine v12.9.3 | autotools (C, nasm) | release tarball: `./configure --prefix=/usr --enable-all && make && make DESTDIR=$pkgdir install` (Arch PKGBUILD); build-deps `nasm mtools clang lld llvm` | TBFSR |
+| limine-mkinitcpio-hook (limine-entry-tool) | gitlab.com/Zesko/limine-entry-tool 1.37.1 ([ryoku]) / 1.40.0 (AUR) | gradle 9.6.1 + GraalVM CE 25 native-image | `JAVA_HOME=<graalvm-25> gradle clean nativeCompile` (upstream README) with the vendored offline plugin repo (`release/gradle-offline`); install `build/native/nativeCompile/limine-entry-tool` → `/usr/lib/limine/`, scripts from `install/arch-linux/limine-entry-tool/usr/{bin,lib}`; replace the mkinitcpio hook with `/etc/kernel/postinst.d`+`postrm.d` hooks | TBFSR |
+| limine-snapper-sync | gitlab.com/Zesko/limine-snapper-sync 1.31.0 ([ryoku]) | gradle + GraalVM 25 | same native-image build as above (`release/packages/limine-snapper-sync/PKGBUILD:52-68`) | TBFSR |
+| vimix-cursors | github.com/vinceliuice/Vimix-cursors 2020-02-24 | none (prebuilt) | copy `dist/` and `dist-white/` → `/usr/share/icons/Vimix-cursors{,-white}` | TBFSR |
+| matugen | github.com/InioX/matugen v4.2.0 | cargo | `cargo build --frozen --release --all-features` (Arch PKGBUILD) → `/usr/bin/matugen` | TBFSR |
+| wl-clip-persist | github.com/Linus789/wl-clip-persist v0.5.0 | cargo (MSRV 1.85) | `cargo build --release --locked` | TBFSR |
+| game-devices-udev | codeberg.org/fabiscafe/game-devices-udev 1.0 | none (rules) | install `*.rules` → `/usr/lib/udev/rules.d/`, `uinput` modules-load.d file | TBFSR |
+| broadcom-bt-firmware | github.com/winterheart/broadcom-bt-firmware v12.0.1.1105_p4 | none (upstream .deb) | ship upstream `broadcom-bt-firmware-12.0.1.1105.deb` unchanged | TBFSR |
+| blesh | github.com/akinomyoga/ble.sh v0.4.0-devel3 | none (prebuilt tarball) / make | extract `ble-0.4.0-devel3-2.tar.xz` → `/usr/share/blesh` (path read by `ryoku.bash:18-19`) | TBFSR |
+| zsh-history-substring-search | github.com/zsh-users/zsh-history-substring-search v1.1.0 | none | install the `.zsh` file to the path `ryoku.zsh:47-48` sources | TBFSR |
+| waifu2x-ncnn-vulkan | github.com/nihui/waifu2x-ncnn-vulkan 20250915 | cmake | `cmake -S src -B build -DUSE_SYSTEM_NCNN=OFF … && cmake --build build` (ncnn submodule; Debian has no libncnn-dev); install binary + `models-*` | TBFSR |
+| yazi | github.com/sxyazi/yazi v26.9.1 | cargo (MSRV 1.99) | rustup 1.99 toolchain, `cargo build --release --locked -p yazi-fm -p yazi-cli` | TBFSR |
+| songrec | github.com/marin-m/SongRec 0.7.5 (latest 0.7.6) | cargo (MSRV 1.88) | `cargo build --release --locked` with GTK4/libadwaita, ALSA, Pulse, OpenSSL dev headers | TBFSR |
+| ttf-jetbrains-mono-nerd | ryanoasis/nerd-fonts v3.5.1 | none | `JetBrainsMono.tar.xz` → `/usr/share/fonts/truetype/jetbrains-mono-nerd/` | TBFSR |
+| ttf-firacode-nerd | ryanoasis/nerd-fonts v3.5.1 | none | `FiraCode.tar.xz` → `/usr/share/fonts/truetype/firacode-nerd/` | TBFSR |
+| ttf-hack-nerd | ryanoasis/nerd-fonts v3.5.1 | none | `Hack.tar.xz` → `/usr/share/fonts/truetype/hack-nerd/` | TBFSR |
+| ttf-material-symbols-variable | github.com/google/material-design-icons (Arch 2.874) | none | `variablefont/MaterialSymbols{Rounded,Outlined,Sharp}[FILL,GRAD,opsz,wght].ttf` → `/usr/share/fonts/truetype/material-symbols/` | TBFSR |
+| otf-space-grotesk | github.com/floriankarsten/space-grotesk 2.0.0 | none | `SpaceGrotesk-2.0.0.zip` OTFs → `/usr/share/fonts/opentype/space-grotesk/` | TBFS (Ubuntu has fonts-space-grotesk) |
+| ttf-maple-mono-nf | github.com/subframe7536/maple-font v7.9 | none | `MapleMono-NF.zip` → `/usr/share/fonts/truetype/maple-mono-nf/` | TBFSR |
+| mise | github.com/jdx/mise v2026.10.12 (Arch) | cargo (MSRV 1.95) / upstream APT repo | `cargo build --release --locked`, or mise.jdx.dev APT repo | TBFSR |
+| phinger-cursors | github.com/phisch/phinger-cursors v2.2 | none | `phinger-cursors-variants.tar.bz2` → `/usr/share/icons/` | TBFSR |
+| catppuccin-cursors-mocha | github.com/catppuccin/cursors v2.0.0 | none | `catppuccin-mocha-*-cursors.zip` → `/usr/share/icons/` | TBFSR |
+| apple_cursor | github.com/ful1e5/apple_cursor v2.0.1 | none (prebuilt) | `macOS.tar.xz` → `/usr/share/icons/` | TBFSR |
+| nvibrant-bin | github.com/Tremeschin/nVibrant v1.3.0 | Python wheel | `pip install --root=$pkgdir --no-deps nvibrant-1.3.0-…whl` into a deb (or pybuild) | TBFSR |
+| localsend-bin | github.com/localsend/localsend v1.18.2 | none (upstream .deb) | ship `LocalSend-1.18.2-linux-x86-64.deb` | TBFSR |
+| voxtype-bin | github.com/peteonrails/voxtype v1.1.1 | none (upstream .deb) | ship `voxtype_1.1.1-1_amd64.deb` | TBFSR |
+| ttf-fraunces-variable | github.com/undercasetype/Fraunces 1.000 | none | variable TTFs from the release zip → `/usr/share/fonts/truetype/fraunces/` | TBFSR |
+| zen-browser-bin | github.com/zen-browser/desktop 1.23.3b | none (tarball) | `zen.linux-x86_64.tar.xz` → `/opt/zen-browser`, `/usr/bin/zen-browser` symlink, `.desktop` + icons | TBFSR |
+| pam-fprint-grosshack | gitlab.com/mishakmak/pam-fprint-grosshack v0.3.0 | meson | `meson setup build --prefix=/usr && meson compile -C build` → `pam_fprintd_grosshack.so` in `/usr/lib/x86_64-linux-gnu/security/` | TBFSR |
+| linux-cachyos (+headers) | CachyOS kernel 7.2.7 (CachyOS/linux-cachyos + kernel-patches) | kbuild | kernel.org tarball + CachyOS patches, `make olddefconfig && make bindeb-pkg` | TBFSR (cachyos variant) |
+| cachyos-settings | github.com/CachyOS/CachyOS-Settings 1.4.1 | none | copy the `usr/` tree; Depends `systemd-zram-generator inxi ananicy-cpp` | TBFSR (variant) |
+| ananicy-cpp | gitlab.com/ananicy-cpp/ananicy-cpp v1.2.0 | cmake | `cmake -B build -DCMAKE_INSTALL_PREFIX=/usr -DUSE_EXTERNAL_SPDLOG=ON -DUSE_EXTERNAL_JSON=ON … && cmake --build build` (Arch PKGBUILD) | TBFSR (variant) |
+| cachyos-ananicy-rules | github.com/CachyOS/ananicy-rules 1.1.49 | none | copy rules → `/etc/ananicy.d/` | TBFSR (variant) |
+| scx-scheds | github.com/sched-ext/scx v1.1.4 (Arch 1.1.3) | cargo + clang/libbpf | `cargo build --release --locked` (Arch PKGBUILD), needs a sched_ext kernel | TBFSR (variant) |
+| proton-cachyos-slr | github.com/CachyOS/proton-cachyos cachyos-11.0-20261014-slr | none (tarball) | unpack → `/usr/share/steam/compatibilitytools.d/proton-cachyos-slr/` | TBFSR (variant) |
+| gpk | github.com/neur0map/glazepkg v0.6.10 | none (upstream release binary; Go source) | install release asset `gpk-linux-amd64` → `/usr/bin/gpk` as the `[ryoku]` recipe does; Depends `apt` instead of `pacman` | TBFSR |
+| adw-gtk-theme | github.com/lassekongo83/adw-gtk3 v6.5 | none (prebuilt) / meson+sassc | `adw-gtk3v6.5.tar.xz` → `/usr/share/themes/adw-gtk3{,-dark}` | TBFSR |
+| asusctl | github.com/OpenGamingCollective/asusctl 6.4.0 ([ryoku]) | cargo (MSRV 1.93) | `cargo build --release --locked -p asusctl -p asusd -p asus-shutdown` (`[ryoku]` recipe) | TBFSR |
+| qmk_hid | github.com/FrameworkComputer/qmk_hid (tags) | cargo (edition 2024) | `cargo build --release --locked` + `62-ryoku-qmk-hid.rules` | TBFSR |
+| hypr-dynamic-cursors | github.com/VirtCode/hypr-dynamic-cursors (git) | make | `make all` against the shipped Hyprland's headers (`[ryoku]` recipe) | TBFSR |
+| hyprglass | github.com/hyprnux/hyprglass v0.10.0 | make | `make` against the shipped Hyprland's headers | TBFSR |
+| imgborders | codeberg.org/zacoons/imgborders | cmake | `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build` against the shipped Hyprland's headers | TBFSR |
+| hyprland-preview-share-picker | github.com/WhySoBad/hyprland-preview-share-picker e2f30ff | cargo (GTK4) | `cargo build --release --locked` | TBFSR |
+| niri | github.com/YaLTeR/niri v26.04 | cargo (MSRV 1.87) | `cargo build --release --locked` with libudev/libgbm/libinput/libseat/libpipewire/libdisplay-info/pango dev headers | TBFSR |
+| xwayland-satellite | github.com/Supreeeme/xwayland-satellite add2795 (Arch 0.8.3) | cargo (MSRV 1.85) | `cargo build --release --locked` with libxcb dev headers | TBFSR |
+| Qt 6 stack (qt6-base, qt6-declarative, qt6-wayland, qt6-svg, qt6-multimedia(+ffmpeg), qt6-5compat, qt6-imageformats, qt6-shadertools, KF6 syntax-highlighting) | qt.io 6.9+ (Arch 6.12.0) | cmake | rebuild Debian's forky Qt 6.11.2 source packages on trixie (`dpkg-buildpackage` per source, in dependency order), then rebuild private-ABI dependents (qt6ct, quickshell) | T B |
+| quickshell | git.outfoxxed.me/quickshell/quickshell v0.3.2 | cmake | rebuild Debian sid's `quickshell` 0.3.2 source against the target Qt | T B R |
+| hyprland (+ hypridle, hyprpicker, hyprpolkitagent, xdg-desktop-portal-hyprland, hyprsunset) | hyprwm 0.56.2 stack | cmake/meson | rebuild forky/sid sources (or `debian13-stripped/tools/build-debs.sh`) | hyprland: T B R; satellites: T (and hyprsunset R) |
+| neovim | neovim 0.11.2+ (Arch 0.12.6) | cmake | rebuild forky's neovim 0.12.4 source on trixie | T B |
+| openrgb | OpenRGB 1.0 (Arch 1.1) | qmake/cmake | rebuild forky's openrgb source on trixie | T B |
+| gpu-screen-recorder | git.dec05eba.com/gpu-screen-recorder 6.1.4 | meson | `meson setup build -Dsystemd=true … && meson compile -C build` (Arch PKGBUILD); setcap on gsr-kms-server | T B R |
+| xpadneo-dkms | github.com/atar-axis/xpadneo v0.10.4 | dkms | rebuild sid's `xpadneo` source (arch:all) | T B R |
+| gamescope, yt-dlp, go | Debian trixie-backports | — | take from trixie-backports | T |
+| looking-glass | github.com/gnif/LookingGlass B7 | cmake | rebuild sid's `looking-glass` source | TBFR |
+| nvidia-utils / lib32-nvidia-utils | NVIDIA 570+ (Arch 615.78) | vendor | NVIDIA CUDA APT repo or port packaging (see question) | TBFS |
+| github-cli | github.com/cli/cli v2.102.0 | go / upstream APT repo | cli.github.com APT repo | F |
+| chromium, firefox | — | snap on Ubuntu | third-party deb repo (Mozilla APT for firefox) | R |
+
+Plus the 15 Ryoku-own packages built from `release/packages/*` (owned by the packaging section): `ryoku-shell`, `ryoku-hub`, `ryoku-rashin`, `ryoku-blobs`, `ryoku`, `ryoku-keyring`, `ryoku-oh-my-zsh`, `ryoku-cursors`, `ryoku-cursor-material`, `ryogami`, `ryotunes`, `ryomotion`, `ryoku-desktop`, `ryoku-hypr-plugins`, `ryoku-keysounds`.
+
+## Version-sensitive list (base choice changes the build list)
+
+Rows where at least one base has an adequate deb and at least one does not:
+
+| Arch pkg | needs build on | fine on | why (see row) |
+|---|---|---|---|
+| `qt6-wayland` | trixie, trixie + backports | forky (testing), sid, resolute (Ubuntu 26.04) | Must be the same Qt build as qt6-declarative: trixie's Qt 6.8.2 is below the 6.9 the shell needs (see qt6-declarative). |
+| `qt6-declarative` | trixie, trixie + backports | forky (testing), sid, resolute (Ubuntu 26.04) | OLDER on trixie: `RectangularShadow` (QtQuick.Effects, Qt ≥ 6.9) is used in 13 shell files, e.g. DockItem.qml:123, LauncherSurface.qml:459; trixie has Qt 6.8.2 (no backport), forky/sid 6.11.2, resolute 6.10.2, Arch 6.12.0. |
+| `qt6-5compat` | trixie, trixie + backports | forky (testing), sid, resolute (Ubuntu 26.04) | Qt-baseline bound (trixie 6.8.2). |
+| `qt6-svg` | trixie, trixie + backports | forky (testing), sid, resolute (Ubuntu 26.04) | Qt-baseline bound. |
+| `qt6-multimedia` | trixie, trixie + backports | forky (testing), sid, resolute (Ubuntu 26.04) | Qt-baseline bound. |
+| `qt6-multimedia-ffmpeg` | trixie, trixie + backports | forky (testing), sid, resolute (Ubuntu 26.04) | Debian ships libffmpegmediaplugin.so inside libqt6multimedia6 (/usr/lib/x86_64-linux-gnu/qt6/plugins/multimedia/); no separate package. |
+| `hypridle` | trixie | trixie + backports, forky (testing), sid, resolute (Ubuntu 26.04) | Not in trixie main; trixie-bpo/forky/sid 0.1.8 = Arch; resolute 0.1.7. |
+| `chromium` | resolute (Ubuntu 26.04) | trixie, trixie + backports, forky (testing), sid | Ubuntu 26.04 has no chromium deb, only chromium-browser 2:1snap1 that installs the snap: REPLACED-BY snap or a third-party deb there. |
+| `firefox` | resolute (Ubuntu 26.04) | trixie, trixie + backports, forky (testing), sid | trixie 140 ESR, forky 153 ESR, sid firefox 158 = Arch 158. Mozilla's own APT repo (packages.mozilla.org) is the non-ESR deb route for all bases. |
+| `gamescope` | trixie | trixie + backports, forky (testing), sid, resolute (Ubuntu 26.04) | Debian contrib (trixie-bpo 3.16.22, forky/sid 3.16.24), Ubuntu multiverse 3.16.20, Arch 3.16.31; absent from trixie main. |
+| `xpadneo-dkms` | trixie, trixie + backports, resolute (Ubuntu 26.04) | forky (testing), sid | Ships from [ryoku] on Arch (release/packages/xpadneo-dkms 0.10.4). Debian forky/sid 0.10.4; absent from trixie and resolute (arch:all dkms source, backports trivially). |
+| `github-cli` | forky (testing) | trixie, trixie + backports, sid, resolute (Ubuntu 26.04) | Debian gh 2.46.0 in trixie and sid, absent from forky (dropped from testing); Ubuntu 2.46.0; Arch 2.102.0. cli.github.com publishes an APT repo. |
+| `neovim` | trixie, trixie + backports | forky (testing), sid, resolute (Ubuntu 26.04) | OLDER on trixie: LazyVim requires Neovim ≥ 0.11.2 (LazyVim README:59); trixie 0.10.4, resolute 0.11.6, forky/sid 0.12.4, Arch 0.12.6. |
+| `quickshell` | trixie, trixie + backports, resolute (Ubuntu 26.04) | forky (testing), sid | Needs ≥ 0.3.0: Quickshell.Networking (ConnectionsPage.qml:7), Quickshell.WindowManager (Wm.qml:6) and ShortcutInhibitor (KeybindsPage.qml:2053) were all added in v0.3.0 (upstream changelog/v0.3.0.md). |
+| `hyprpicker` | trixie | trixie + backports, forky (testing), sid, resolute (Ubuntu 26.04) | trixie-bpo/forky/sid 0.4.7 = Arch; resolute 0.4.6; absent from trixie main. |
+| `openrgb` | trixie, trixie + backports | forky (testing), sid, resolute (Ubuntu 26.04) | Absent from trixie; forky/sid 1.0, resolute 0.9, Arch 1.1. |
+| `yt-dlp` | trixie | trixie + backports, forky (testing), sid, resolute (Ubuntu 26.04) | OLDER on trixie main (2025.04.30): extractors go stale as sites change; trixie-bpo/forky/sid 2026.08.19 = Arch; resolute 2026.03.17. |
+| `gpu-screen-recorder` | trixie, trixie + backports, resolute (Ubuntu 26.04) | forky (testing), sid | forky/sid 5.13.8 vs Arch 6.1.4; absent from trixie and resolute. Upstream git.dec05eba.com/gpu-screen-recorder, meson. |
+| `otf-space-grotesk` | trixie, trixie + backports, forky (testing), sid | resolute (Ubuntu 26.04) | [ryoku] recipe from upstream SpaceGrotesk-2.0.0.zip (github.com/floriankarsten/space-grotesk 2.0.0); Ubuntu resolute universe has 2.0.0. |
+| `nvidia-utils` | trixie, trixie + backports, forky (testing), sid | resolute (Ubuntu 26.04) | Debian has 550.163 in every suite (555 only in experimental) vs Arch 615.78: no Blackwell (RTX 50) support, which needs ≥ 570. Ubuntu resolute ships nvidia-driver-615-open 615.71 (multiverse). |
+| `lib32-nvidia-utils` | trixie, trixie + backports, forky (testing), sid | resolute (Ubuntu 26.04) | multiarch i386; same 550 ceiling on Debian. |
+| `go` | trixie | trixie + backports, forky (testing), sid, resolute (Ubuntu 26.04) | OLDER on trixie: go.mod requires go 1.26 / 1.26.4 with toolchain go1.26.5 (installation/tui/go.mod, ryoku/hub/backend/go.mod, ryoku/shell/ipc/go.mod); trixie golang-go 1.24; trixie-bpo golang-go 2:1.27 + golang-1.26 1.26.9; … |
+| `qt6-base` | trixie, trixie + backports | forky (testing), sid, resolute (Ubuntu 26.04) | Qt-baseline bound; ryoku-blobs additionally needs ShaderTools (ryoku/shell/plugin/CMakeLists.txt:18) -> qt6-shadertools-dev. |
+| `qt6-imageformats` | trixie, trixie + backports | forky (testing), sid, resolute (Ubuntu 26.04) | Qt-baseline bound. |
+| `syntax-highlighting` | trixie, trixie + backports | forky (testing), sid, resolute (Ubuntu 26.04) | KF6 6.13 on trixie is built on Qt 6.8.2 (Qt-baseline bound). |
+| `looking-glass` | trixie, trixie + backports, forky (testing), resolute (Ubuntu 26.04) | sid | Debian sid only (0+b7); upstream github.com/gnif/LookingGlass B7 (AUR 2:B7); the kvmfr module the Hub also checks (hwcaps.go:588) is a separate dkms build. |
+| `hyprland` | trixie, trixie + backports, resolute (Ubuntu 26.04) | forky (testing), sid | OLDER on trixie-bpo (0.55.2) and resolute (0.53.3): Ryoku's Lua config needs ≥ 0.55 (src/config/lua first appears at Hyprland v0.55.0) and the generated plugin keys target 0.56 (ryoku/wm/hyprland/config_plugins.go:244-245); … |
+| `hyprpolkitagent` | trixie | trixie + backports, forky (testing), sid, resolute (Ubuntu 26.04) | trixie-bpo 0.1.3, forky/sid 0.2.0 = Arch, resolute 0.1.3; absent from trixie main. |
+| `xdg-desktop-portal-hyprland` | trixie | trixie + backports, forky (testing), sid, resolute (Ubuntu 26.04) | trixie-bpo/forky/sid 1.4.1 = Arch; resolute 1.3.11; absent from trixie main. |
+| `hyprsunset` | trixie, resolute (Ubuntu 26.04) | trixie + backports, forky (testing), sid | trixie-bpo/forky/sid 0.4.0 = Arch; absent from trixie main and resolute. |
+
+Build-list size per base (unique Arch names that need a port-built, repackaged or third-party-repo deb; NOT-NEEDED rows excluded):
+
+| Base | third-party packages to build or repackage | + Ryoku-own packages | total |
+|---|---|---|---|
+| trixie | 72 | 15 | 87 |
+| trixie + backports | 64 | 15 | 79 |
+| forky (testing) | 50 | 15 | 65 |
+| sid | 48 | 15 | 63 |
+| resolute (Ubuntu 26.04) | 53 | 15 | 68 |
+
+The trixie figures count the 9 Qt-family names individually; in practice they are one Qt 6.11 rebuild plus its private-ABI dependents. The 45 names that need building on every base: `limine`, `limine-mkinitcpio-hook`, `limine-snapper-sync`, `vimix-cursors`, `matugen`, `wl-clip-persist`, `game-devices-udev`, `broadcom-bt-firmware`, `blesh`, `zsh-history-substring-search`, `waifu2x-ncnn-vulkan`, `yazi`, `songrec`, `ttf-jetbrains-mono-nerd`, `ttf-firacode-nerd`, `ttf-hack-nerd`, `ttf-material-symbols-variable`, `ttf-maple-mono-nf`, `mise`, `phinger-cursors`, `catppuccin-cursors-mocha`, `apple_cursor`, `nvibrant-bin`, `localsend-bin`, `voxtype-bin`, `ttf-fraunces-variable`, `zen-browser-bin`, `pam-fprint-grosshack`, `linux-cachyos`, `linux-cachyos-headers`, `cachyos-settings`, `ananicy-cpp`, `cachyos-ananicy-rules`, `scx-scheds`, `proton-cachyos-slr`, `gpk`, `adw-gtk-theme`, `asusctl`, `qmk_hid`, `hypr-dynamic-cursors`, `hyprglass`, `imgborders`, `hyprland-preview-share-picker`, `niri`, `xwayland-satellite`.
+
+Per-base build lists:
+- trixie: `limine`, `limine-mkinitcpio-hook`, `limine-snapper-sync`, `qt6-wayland`, `vimix-cursors`, `qt6-declarative`, `qt6-5compat`, `qt6-svg`, `qt6-multimedia`, `qt6-multimedia-ffmpeg`, `matugen`, `hypridle`, `wl-clip-persist`, `gamescope`, `xpadneo-dkms`, `game-devices-udev`, `broadcom-bt-firmware`, `blesh`, `zsh-history-substring-search`, `neovim`, `quickshell`, `hyprpicker`, `waifu2x-ncnn-vulkan`, `openrgb`, `yazi`, `yt-dlp`, `songrec`, `gpu-screen-recorder`, `ttf-jetbrains-mono-nerd`, `ttf-firacode-nerd`, `ttf-hack-nerd`, `ttf-material-symbols-variable`, `otf-space-grotesk`, `ttf-maple-mono-nf`, `nvidia-utils`, `lib32-nvidia-utils`, `go`, `mise`, `phinger-cursors`, `catppuccin-cursors-mocha`, `apple_cursor`, `nvibrant-bin`, `localsend-bin`, `voxtype-bin`, `ttf-fraunces-variable`, `zen-browser-bin`, `pam-fprint-grosshack`, `linux-cachyos`, `linux-cachyos-headers`, `cachyos-settings`, `ananicy-cpp`, `cachyos-ananicy-rules`, `scx-scheds`, `proton-cachyos-slr`, `qt6-base`, `gpk`, `qt6-imageformats`, `adw-gtk-theme`, `syntax-highlighting`, `looking-glass`, `asusctl`, `qmk_hid`, `hyprland`, `hypr-dynamic-cursors`, `hyprglass`, `imgborders`, `hyprpolkitagent`, `xdg-desktop-portal-hyprland`, `hyprland-preview-share-picker`, `hyprsunset`, `niri`, `xwayland-satellite`
+- trixie + backports: `limine`, `limine-mkinitcpio-hook`, `limine-snapper-sync`, `qt6-wayland`, `vimix-cursors`, `qt6-declarative`, `qt6-5compat`, `qt6-svg`, `qt6-multimedia`, `qt6-multimedia-ffmpeg`, `matugen`, `wl-clip-persist`, `xpadneo-dkms`, `game-devices-udev`, `broadcom-bt-firmware`, `blesh`, `zsh-history-substring-search`, `neovim`, `quickshell`, `waifu2x-ncnn-vulkan`, `openrgb`, `yazi`, `songrec`, `gpu-screen-recorder`, `ttf-jetbrains-mono-nerd`, `ttf-firacode-nerd`, `ttf-hack-nerd`, `ttf-material-symbols-variable`, `otf-space-grotesk`, `ttf-maple-mono-nf`, `nvidia-utils`, `lib32-nvidia-utils`, `mise`, `phinger-cursors`, `catppuccin-cursors-mocha`, `apple_cursor`, `nvibrant-bin`, `localsend-bin`, `voxtype-bin`, `ttf-fraunces-variable`, `zen-browser-bin`, `pam-fprint-grosshack`, `linux-cachyos`, `linux-cachyos-headers`, `cachyos-settings`, `ananicy-cpp`, `cachyos-ananicy-rules`, `scx-scheds`, `proton-cachyos-slr`, `qt6-base`, `gpk`, `qt6-imageformats`, `adw-gtk-theme`, `syntax-highlighting`, `looking-glass`, `asusctl`, `qmk_hid`, `hyprland`, `hypr-dynamic-cursors`, `hyprglass`, `imgborders`, `hyprland-preview-share-picker`, `niri`, `xwayland-satellite`
+- forky: `limine`, `limine-mkinitcpio-hook`, `limine-snapper-sync`, `vimix-cursors`, `matugen`, `wl-clip-persist`, `game-devices-udev`, `broadcom-bt-firmware`, `blesh`, `zsh-history-substring-search`, `github-cli`, `waifu2x-ncnn-vulkan`, `yazi`, `songrec`, `ttf-jetbrains-mono-nerd`, `ttf-firacode-nerd`, `ttf-hack-nerd`, `ttf-material-symbols-variable`, `otf-space-grotesk`, `ttf-maple-mono-nf`, `nvidia-utils`, `lib32-nvidia-utils`, `mise`, `phinger-cursors`, `catppuccin-cursors-mocha`, `apple_cursor`, `nvibrant-bin`, `localsend-bin`, `voxtype-bin`, `ttf-fraunces-variable`, `zen-browser-bin`, `pam-fprint-grosshack`, `linux-cachyos`, `linux-cachyos-headers`, `cachyos-settings`, `ananicy-cpp`, `cachyos-ananicy-rules`, `scx-scheds`, `proton-cachyos-slr`, `gpk`, `adw-gtk-theme`, `looking-glass`, `asusctl`, `qmk_hid`, `hypr-dynamic-cursors`, `hyprglass`, `imgborders`, `hyprland-preview-share-picker`, `niri`, `xwayland-satellite`
+- sid: `limine`, `limine-mkinitcpio-hook`, `limine-snapper-sync`, `vimix-cursors`, `matugen`, `wl-clip-persist`, `game-devices-udev`, `broadcom-bt-firmware`, `blesh`, `zsh-history-substring-search`, `waifu2x-ncnn-vulkan`, `yazi`, `songrec`, `ttf-jetbrains-mono-nerd`, `ttf-firacode-nerd`, `ttf-hack-nerd`, `ttf-material-symbols-variable`, `otf-space-grotesk`, `ttf-maple-mono-nf`, `nvidia-utils`, `lib32-nvidia-utils`, `mise`, `phinger-cursors`, `catppuccin-cursors-mocha`, `apple_cursor`, `nvibrant-bin`, `localsend-bin`, `voxtype-bin`, `ttf-fraunces-variable`, `zen-browser-bin`, `pam-fprint-grosshack`, `linux-cachyos`, `linux-cachyos-headers`, `cachyos-settings`, `ananicy-cpp`, `cachyos-ananicy-rules`, `scx-scheds`, `proton-cachyos-slr`, `gpk`, `adw-gtk-theme`, `asusctl`, `qmk_hid`, `hypr-dynamic-cursors`, `hyprglass`, `imgborders`, `hyprland-preview-share-picker`, `niri`, `xwayland-satellite`
+- resolute: `limine`, `limine-mkinitcpio-hook`, `limine-snapper-sync`, `vimix-cursors`, `matugen`, `wl-clip-persist`, `chromium`, `firefox`, `xpadneo-dkms`, `game-devices-udev`, `broadcom-bt-firmware`, `blesh`, `zsh-history-substring-search`, `quickshell`, `waifu2x-ncnn-vulkan`, `yazi`, `songrec`, `gpu-screen-recorder`, `ttf-jetbrains-mono-nerd`, `ttf-firacode-nerd`, `ttf-hack-nerd`, `ttf-material-symbols-variable`, `ttf-maple-mono-nf`, `mise`, `phinger-cursors`, `catppuccin-cursors-mocha`, `apple_cursor`, `nvibrant-bin`, `localsend-bin`, `voxtype-bin`, `ttf-fraunces-variable`, `zen-browser-bin`, `pam-fprint-grosshack`, `linux-cachyos`, `linux-cachyos-headers`, `cachyos-settings`, `ananicy-cpp`, `cachyos-ananicy-rules`, `scx-scheds`, `proton-cachyos-slr`, `gpk`, `adw-gtk-theme`, `looking-glass`, `asusctl`, `qmk_hid`, `hyprland`, `hypr-dynamic-cursors`, `hyprglass`, `imgborders`, `hyprland-preview-share-picker`, `hyprsunset`, `niri`, `xwayland-satellite`
+
+## Arch-specific packages with no meaning on Debian
+
+| Arch pkg | Arch role (cite) | Debian replacement |
+|---|---|---|
+| `base` (its pacman, archlinux-keyring members) | pacstrap target meta (B:6) | mmdebstrap/debootstrap minbase + debian-archive-keyring / ubuntu-keyring |
+| `mkinitcpio` | initramfs (B:22; chroot.sh:145) | initramfs-tools or dracut |
+| `mkinitcpio-archiso` | live squashfs hooks (I:15) | live-boot (Debian), casper (Ubuntu) |
+| `limine-mkinitcpio-hook` (hook half) | mkinitcpio/pacman kernel hook (B:33) | `/etc/kernel/postinst.d` + `postrm.d` scripts |
+| `snap-pac` | pacman pre/post snapshots (B:39) | snapper's `/etc/apt/apt.conf.d/80snapper` |
+| `yay-bin` | AUR helper (A:7) | none; port APT repo |
+| `reflector` | mirror ranking (I:41) | deb.debian.org CDN / netselect-apt |
+| `arch-install-scripts` (pacstrap) | target install (I:24) | mmdebstrap/debootstrap (arch-chroot, genfstab still usable from Debian's package) |
+| `cachyos-keyring`, `cachyos-mirrorlist`, `cachyos-v3-mirrorlist`, `cachyos-v4-mirrorlist` | pacman repo trust + mirrors (C:20-23) | apt source + `signed-by` keyring |
+| `lib32-*` (5 names) | Arch multilib repo (H:24,29,45,51) | Debian multiarch `:i386` |
+| `ryoku-keyring` | pacman keyring for [ryoku] (U:30) | APT archive-keyring deb |
+| `bluez-utils`, `ntfsprogs`, `qt6-multimedia-ffmpeg` | Arch splits | contained in `bluez`, `ntfs-3g`, `libqt6multimedia6` |
+| pacman hooks (not packages): dkms alpm hooks (U:204-206), `/etc/pacman.d/hooks/ryoku-nvidia.hook` (nvidia.sh:252-253), `90-mkinitcpio-install.hook` deferral (ryoku-install:185-190) | | dpkg triggers, `/etc/kernel/*.d`, apt `DPkg::Post-Invoke` |
+
+## Cross-cutting findings
+
+1. **The package lists are runtime data, not just installer input.** `ryokumanifest/generate.go:117-120` folds base/dev/hardware/aur into the release manifest (`manifest.go:28-34`) that `ryoku doctor` converges every box to; the compositor lists are duplicated in `ryoku/wm/hyprland/caps.go:67-78` and `ryoku/wm/niri/caps.go:73-80`; `manifest.go:117-133` hardcodes opt-in names (`asusctl`, `dualsensectl`, `pam-fprint-grosshack`, `limine-snapper-sync`, `ryoku-palette-bridge`). Any Debian rename must flow through all of these, and the doctor's pacman calls (`ryoku/cli/internal/sys/sys.go`, `doctor/reconcile_*.go`, `updater/*.go`) must target dpkg/apt.
+2. **Qt ≥ 6.9** (RectangularShadow) and **Quickshell ≥ 0.3.0** decide the base for the shell: forky/sid/resolute have the Qt; only forky/sid package a new-enough Quickshell.
+3. **Hyprland ≥ 0.56** for the Lua config + plugin keys: only forky/sid; every Hyprland plugin (`ryoku-hypr-plugins`, `hyprglass`, `imgborders`, `hypr-dynamic-cursors`) must be rebuilt per Hyprland release.
+4. **Go 1.26** for every Go component (installer TUI, hub, shell ipc, ryovm, ryostore): trixie needs backports.
+5. **Binary/path renames** scripts must absorb: `batcat`, `fdfind`, `magick` (via alternatives), `pactl` in `pulseaudio-utils`, zsh plugin paths (`ryoku.zsh:45-50`), OVMF `_4M` names (`hwcaps.go:574-585`), Qt QML dir `/usr/lib/x86_64-linux-gnu/qt6/qml`.
+6. **Components and architectures:** firmware, microcode, intel-media non-free, NVIDIA, broadcom-sta need Debian `non-free`/`non-free-firmware`, gamescope and nvidia-open-kernel-dkms need `contrib`; Ubuntu needs `universe`/`multiverse`/`restricted`; lib32 needs `dpkg --add-architecture i386`.
+7. **PipeWire AAC** is absent on Debian/Ubuntu (no fdk-aac), affecting the codec list in `51-ryoku-bluetooth.conf:24`.
+8. **Docs vs code:** `system/packages/README.md:17-19` (amd-nvidia sections) vs `pacstrap.sh:53`; `base.packages:16-19` (CachyOS kernel "never baked") vs `cachyos.packages:1-3` + `pacstrap.sh:71-79`; `aur.sh:21` CRITICAL list names packages no longer in aur.packages; `base.packages:8-11` cites Rust programs that are not in the tree.
+9. **NVIDIA**: Debian archive ceiling 550.163 (no Blackwell) vs Ubuntu 615.
+10. **Snapshots:** Debian snapper ships its own apt hook (`80snapper`), so `snap-pac` behaviour is replaced, with different snapshot descriptions and cleanup timing.
+
+## Flat Debian package list (for the master list)
+
+Debian names this section needs (Ubuntu substitutes/additions: `linux-image-generic linux-headers-generic linux-firmware mesa-libgallium nvidia-driver-615-open libnvidia-gl-615:i386 fonts-space-grotesk casper`; Ubuntu has no `firefox-esr`, `chromium`, `netselect-apt` debs):
+
+adwaita-icon-theme alsa-utils amd64-microcode arch-install-scripts autoconf automake bash-completion bat bison bluez brightnessctl broadcom-sta-dkms btop btrfs-progs build-essential bzip2 cage cargo cava chromium cliphist cmake console-data console-setup cryptsetup cryptsetup-initramfs curl ddcutil debootstrap debugedit desktop-file-utils dkms docker.io dosfstools dracut e2fsprogs efibootmgr eza fakeroot fastfetch fd-find ffmpeg file firefox firefox-esr firmware-amd-graphics firmware-atheros firmware-brcm80211 firmware-cirrus firmware-intel-graphics firmware-intel-misc firmware-intel-sound firmware-iwlwifi firmware-linux firmware-linux-free firmware-linux-nonfree firmware-mediatek firmware-misc-nonfree firmware-nvidia-graphics firmware-realtek firmware-sof-signed firmware-ti-connectivity fish flatpak flex fonts-inter fonts-inter-variable fonts-noto-cjk fonts-noto-color-emoji fonts-noto-core fonts-noto-extra fonts-noto-ui-core foot fuzzel fzf gamemode gamescope gammastep gdisk gettext-base gh git gnome-keyring gnome-themes-extra golang-go gpu-screen-recorder grim groff-base gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly hypridle hyprland hyprpicker hyprpolkitagent hyprsunset imagemagick initramfs-tools intel-media-va-driver-non-free intel-microcode inxi iproute2 iputils-ping isolinux iw iwd jq kbd kdialog keyboard-configuration kitty lazygit less libegl-mesa0 libfreeaptx0 libgbm1 libgl1-mesa-dri libglx-mesa0 libkf6syntaxhighlighting6 liblc3-1 libldacbt-enc2 libmfx-gen1.2 libnotify-bin libpam-gnome-keyring libpam-u2f libqalculate23 libqt6core5compat6 libqt6multimedia6 libqt6svg6 libspa-0.2-bluetooth libtool libvirglrenderer1 libvirt-clients libvirt-daemon-system libvulkan1 libzbar0t64 linux-headers-amd64 linux-image-amd64 live-boot live-config looking-glass-client lvm2 m4 mangohud mdadm mesa-libgallium mesa-va-drivers mesa-vulkan-drivers mesa-vulkan-drivers:i386 mmdebstrap mpv mpv-mpris nautilus neovim network-manager nftables ninja-build nodejs npm ntfs-3g nvidia-driver nvidia-driver-libs nvidia-driver-libs:i386 nvidia-open-kernel-dkms nvidia-vaapi-driver nvidia-vulkan-icd openrgb openssl ovmf pamu2fcfg papirus-icon-theme parted patch pavucontrol pciutils pipewire pipewire-alsa pipewire-audio pipewire-bin pipewire-pulse pipx pkexec pkgconf plasma-integration playerctl plymouth plymouth-themes polkitd power-profiles-daemon procps psmisc pulseaudio-utils python3 python3-nautilus python3-pip qalc qemu-block-extra qemu-system-gui qemu-system-modules-opengl qemu-system-modules-spice qemu-system-x86 qemu-utils qml6-module-org-kde-syntaxhighlighting qml6-module-qt-labs-folderlistmodel qml6-module-qt5compat-graphicaleffects qml6-module-qtmultimedia qml6-module-qtqml-models qml6-module-qtqml-workerscript qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-dialogs qml6-module-qtquick-effects qml6-module-qtquick-layouts qml6-module-qtquick-shapes qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qttest qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-image-formats-plugins qt6-shadertools-dev qt6-wayland qt6ct qtwayland5 quickemu quickshell ripgrep rtkit rustc sddm slurp snap snapper spice-client-gtk starship sudo swtpm swtpm-tools syslinux syslinux-common systemd systemd-sysv systemd-zram-generator tesseract-ocr tesseract-ocr-eng texinfo transitional upower vim virt-viewer weston wf-recorder wireless-regdb wireplumber wl-clipboard wpasupplicant wtype xdg-desktop-portal-gnome xdg-desktop-portal-gtk xdg-desktop-portal-hyprland xdg-user-dirs xdg-utils xorriso xpadneo-dkms xwayland xz-utils yt-dlp zbar-tools zenity zoxide zsh zsh-autosuggestions zsh-syntax-highlighting
