@@ -187,8 +187,7 @@ and `part_dev`/`part_num`/`dev_uuid` (`common.sh:16-154`). `i18n.sh` loads
 
 **Issues / risks:** `arch-chroot` mounts a fresh tmpfs on `/run`; Debian maintainer scripts
 call `deb-systemd-invoke`/`invoke-rc.d`, and without `/usr/sbin/policy-rc.d` (exit 101)
-they may try to start services inside the target. Prior art installs exactly that:
-`/home/me/src/Debian13-Hyprland/scripts/30-bootstrap.sh:248-263`.
+they may try to start services inside the target.
 
 ---
 
@@ -279,8 +278,8 @@ pacstrap (`:143-166`).
 
 **Port steps:**
 1. Replace the file with a Debian version: default mirror `http://deb.debian.org/debian` (Fastly-backed CDN, geo-routed) and `http://security.debian.org/debian-security`; Ubuntu: `http://archive.ubuntu.com/ubuntu` (or `http://<CC>.archive.ubuntu.com/ubuntu` with CC from the regdom/geolocation already computed in `network.sh:91-116`) and `http://security.ubuntu.com/ubuntu`.
-2. Optional ranked tier: `netselect-apt -o /tmp/ns.sources <suite>` then probe the winner's `dists/<suite>/InRelease` before use, falling back to the CDN — exact recipe in `/home/me/src/debian13-stripped/installer/engine.sh:359-376`.
-3. Replace `ryoku_pacman_tuning` with `/etc/apt/apt.conf.d/80ryoku-install`: `Acquire::Retries "3";` `Acquire::http::Timeout "30";` `APT::Install-Recommends "false";` (prior art writes `Acquire::Retries "3"` into the image: `/home/me/src/debian13-stripped/build-rootfs.sh:63`). `ILoveCandy` has no apt equivalent; drop it. `DisableDownloadTimeout` has none either (apt retries instead).
+2. Optional ranked tier: `netselect-apt -o /tmp/ns.sources <suite>` then probe the winner's `dists/<suite>/InRelease` before use, falling back to the CDN.
+3. Replace `ryoku_pacman_tuning` with `/etc/apt/apt.conf.d/80ryoku-install`: `Acquire::Retries "3";` `Acquire::http::Timeout "30";` `APT::Install-Recommends "false";`. `ILoveCandy` has no apt equivalent; drop it. `DisableDownloadTimeout` has none either (apt retries instead).
 4. `ryoku_mirrors_fallback` becomes: on a failed bootstrap, switch from a netselect mirror to the CDN once.
 
 **Complexity:** Low.
@@ -479,7 +478,6 @@ lower mirror tier, `--needed --overwrite '*'` `:169-186`); writes fstab with
    `http://security.ubuntu.com/ubuntu resolute-security`, same components.
    `--skip=check/empty` is required because `/mnt` already holds the mounted subvolume
    directories (`home`, `var/log`, `var/cache/…`, `.snapshots`, `boot`, `swap`).
-   Prior-art mmdebstrap call: `/home/me/src/debian13-stripped/build-rootfs.sh:53-56`.
 3. `bootstrap.packages` (Debian names; profile/initramfs choices resolved by the installer before the call):
    `systemd-sysv udev dbus kmod util-linux-extra locales console-setup keyboard-configuration kbd tzdata sudo ca-certificates curl gnupg jq pciutils`
    `linux-image-amd64 linux-headers-amd64 dkms build-essential`
@@ -492,13 +490,13 @@ lower mirror tier, `--needed --overwrite '*'` `:169-186`); writes fstab with
 4. Profile sections → Debian: `[amd]` `amd64-microcode mesa-vulkan-drivers mesa-vulkan-drivers:i386`; `[intel]` `intel-microcode mesa-vulkan-drivers mesa-vulkan-drivers:i386 intel-media-va-driver-non-free`; `[nvidia]` see §15; `[vm]` `mesa-vulkan-drivers mesa-vulkan-drivers:i386` (lavapipe is inside `mesa-vulkan-drivers`). i386 needs `dpkg --add-architecture i386 && apt-get update` in the target first; mmdebstrap takes `--architectures=amd64,i386`.
 5. Broadcom: `broadcom-wl-dkms` → `broadcom-sta-dkms` (Debian non-free, Ubuntu restricted).
 6. Replace both retry regimes: online → `apt-get -o Acquire::Retries=5 install --fix-missing` once more after switching mirrors; offline → print the first `dpkg: error` / `E:` line from the log. dpkg overwrites files not owned by any package without error, so the `--overwrite '*'` recovery for orphaned files (`pacstrap.sh:166-175`) has no counterpart need; file conflicts between packages surface as `trying to overwrite '…', which is also in package …`.
-7. fstab: keep `genfstab -U /mnt >> /mnt/etc/fstab` (Debian `arch-install-scripts` ships it, pure bash over `findmnt`), or write fstab explicitly as `/home/me/src/debian13-stripped/installer/engine.sh:518-537` does. genfstab carries `compress=zstd:1,noatime,subvol=/@…` and the swapfile line.
+7. fstab: keep `genfstab -U /mnt >> /mnt/etc/fstab` (Debian `arch-install-scripts` ships it, pure bash over `findmnt`), or write fstab explicitly. genfstab carries `compress=zstd:1,noatime,subvol=/@…` and the swapfile line.
 8. After the bootstrap, remove `/etc/apt/sources.list` written by mmdebstrap and write deb822 `/etc/apt/sources.list.d/debian.sources` (Ubuntu: `ubuntu.sources`) plus `ryoku.sources` with `Signed-By: /usr/share/keyrings/ryoku-archive-keyring.gpg`.
 
 **Complexity:** Medium.
 
 **Issues / risks:**
-- `debootstrap` takes one mirror and resolves `--include` naïvely; mmdebstrap uses apt's resolver and multiple sources (prior art uses mmdebstrap for the rootfs, `/home/me/src/debian13-stripped/build-rootfs.sh:53-56`, and debootstrap from a file:// pool in `/home/me/src/Debian13-Hyprland/lib/00-config.sh:48-76`).
+- `debootstrap` takes one mirror and resolves `--include` naïvely; mmdebstrap uses apt's resolver and multiple sources.
 - minbase lacks `init`; `systemd-sysv` must be named.
 - Debian's `firmware-linux-nonfree` only pulls `firmware-amd-graphics` + `firmware-misc-nonfree`; Wi-Fi/BT/audio firmware are separate packages (listed above). Arch's single `linux-firmware` covers them all (`base.packages:224-230` relies on that).
 - Arch's `broadcom-bt-firmware` (`.hcd` patchram blobs, `base.packages:230`) has no Debian/Ubuntu package.
@@ -521,8 +519,8 @@ afterwards (`:149-165`).
 **Port steps:**
 1. The ISO bakes a flat apt repo (`Packages.xz` + `Release`, built with `apt-ftparchive` or `dpkg-scanpackages`; optionally signed with the Ryoku key) at `/usr/share/ryoku/offline/repo`. Detection: `[[ -s $RYOKU_OFFLINE_REPO/Packages.xz || -s $RYOKU_OFFLINE_REPO/Packages ]]` (same test in the TUI, §19).
 2. Bootstrap: pass `"deb [trusted=yes] file://$RYOKU_OFFLINE_REPO ./"` as the only mmdebstrap source (mmdebstrap accepts file:// mirrors).
-3. In-chroot transactions: bind the repo at the same path and run apt store-only: `-o Dir::Etc::sourcelist=sources.list.d/ryoku-offline.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0`. Exact recipe and rationale: `/home/me/src/debian13-stripped/installer/engine.sh:563-588`.
-4. Use `--no-remove` on every offline install so a closure gap cannot evict the desktop (lesson recorded at `/home/me/src/debian13-stripped/installer/engine.sh:540-546`).
+3. In-chroot transactions: bind the repo at the same path and run apt store-only: `-o Dir::Etc::sourcelist=sources.list.d/ryoku-offline.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0`.
+4. Use `--no-remove` on every offline install so a closure gap cannot evict the desktop.
 5. `ryoku_offline_chroot_off`: delete the list file, `rm -rf /var/lib/apt/lists/*_ryoku_offline_repo_*`, unbind.
 
 **Complexity:** High — the ISO must bake a complete, self-consistent closure for the chosen suite including i386 libs, every NVIDIA branch the driver step can choose, and the Ryoku packages.
@@ -555,11 +553,11 @@ forky/sid closures churn faster.
 **As-is on Debian:** NO.
 
 **Port steps:**
-1. Locale: `sed -i "s/^# *\(${RYOKU_LOCALE//./\\.} \)/\1/" /mnt/etc/locale.gen`, append if absent, `chroot /mnt locale-gen`, `chroot /mnt update-locale LANG=$RYOKU_LOCALE` (writes `/etc/default/locale`). Prior art: `/home/me/src/debian13-stripped/installer/engine.sh:424-431`. Ubuntu: `chroot /mnt locale-gen $RYOKU_LOCALE && chroot /mnt update-locale LANG=$RYOKU_LOCALE`. Keep writing `/etc/locale.conf` too (systemd reads it; harmless).
-2. Keyboard: write `/etc/default/keyboard` (`XKBMODEL="pc105" XKBLAYOUT="$xkbl" XKBVARIANT="$xkbv" XKBOPTIONS="" BACKSPACE="guess"`), then `chroot /mnt env DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -f noninteractive keyboard-configuration console-setup`. Prior art: `/home/me/src/Debian13-Hyprland/scripts/40-system.sh:257-282`. Keep `/etc/vconsole.conf` (read by dracut `i18n` and systemd-vconsole-setup) and the `00-keyboard.conf` X11 snippet.
+1. Locale: `sed -i "s/^# *\(${RYOKU_LOCALE//./\\.} \)/\1/" /mnt/etc/locale.gen`, append if absent, `chroot /mnt locale-gen`, `chroot /mnt update-locale LANG=$RYOKU_LOCALE` (writes `/etc/default/locale`). Ubuntu: `chroot /mnt locale-gen $RYOKU_LOCALE && chroot /mnt update-locale LANG=$RYOKU_LOCALE`. Keep writing `/etc/locale.conf` too (systemd reads it; harmless).
+2. Keyboard: write `/etc/default/keyboard` (`XKBMODEL="pc105" XKBLAYOUT="$xkbl" XKBVARIANT="$xkbv" XKBOPTIONS="" BACKSPACE="guess"`), then `chroot /mnt env DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -f noninteractive keyboard-configuration console-setup`. Keep `/etc/vconsole.conf` (read by dracut `i18n` and systemd-vconsole-setup) and the `00-keyboard.conf` X11 snippet.
 3. Timezone: keep `ln -sf`; add `chroot /mnt dpkg-reconfigure -f noninteractive tzdata` so debconf matches; include `util-linux-extra` for `hwclock`; `systemctl enable systemd-timesyncd` stays (package `systemd-timesyncd`).
-4. Hostname: keep `/etc/hostname`; add `printf '127.0.1.1\t%s\n' "$RYOKU_HOSTNAME" >> /mnt/etc/hosts` (Debian convention; `libnss-myhostname` is not installed by default). Prior art: `/home/me/src/debian13-stripped/installer/engine.sh:383-384`.
-5. User: `useradd -m -G sudo,video,input -s /usr/bin/fish "$RYOKU_USERNAME"` (Debian `/etc/sudoers` already has `%sudo ALL=(ALL:ALL) ALL`); delete `ryoku_cfg_sudo` or keep it writing `%sudo`. Alternative: `groupadd -f wheel` first and keep the drop-in (Q10). Validate any drop-in with `visudo -cqf` (prior art `/home/me/src/debian13-stripped/installer/engine.sh:449-453`).
+4. Hostname: keep `/etc/hostname`; add `printf '127.0.1.1\t%s\n' "$RYOKU_HOSTNAME" >> /mnt/etc/hosts` (Debian convention; `libnss-myhostname` is not installed by default).
+5. User: `useradd -m -G sudo,video,input -s /usr/bin/fish "$RYOKU_USERNAME"` (Debian `/etc/sudoers` already has `%sudo ALL=(ALL:ALL) ALL`); delete `ryoku_cfg_sudo` or keep it writing `%sudo`. Alternative: `groupadd -f wheel` first and keep the drop-in (Q10). Validate any drop-in with `visudo -cqf`.
 6. initramfs (dracut path): write `/etc/dracut.conf.d/ryoku.conf`:
    `hostonly="yes"` (≙ `autodetect`), `early_microcode="yes"` (≙ `microcode`), `compress="zstd"`, `add_dracutmodules+=" plymouth btrfs resume "` (+ `" crypt "` when `RYOKU_ENCRYPT=1`), `add_drivers+=" vmd "` when `/sys/module/vmd` exists (≙ `bootloader.sh:301-312`). dracut includes modprobe.d (`modconf`), KMS drivers (`kms`, `drm` module), keymap/font from `/etc/vconsole.conf` (`keyboard keymap consolefont`, `i18n` module), fsck.
    ryoku-gpu-trim ≙ `omit_drivers+=" nouveau "` written only when nouveau is denylisted and an nvidia module exists (same conditions as `system/boot/mkinitcpio/install/ryoku-gpu-trim:21-27`), as a dracut module (`/usr/lib/dracut/modules.d/90ryoku-gpu-trim/module-setup.sh`) shipped by the Ryoku package.
@@ -706,7 +704,7 @@ blacklist nouveau) and `/etc/mkinitcpio.conf.d/nvidia.conf` only when the module
 **Port steps:**
 1. Make the four vendor scripts package-manager neutral: `pkg_installed` → `dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'`; `install_pkgs` → `apt-get -y --no-install-recommends install`; offline → the store-only apt options (§10) instead of `--config $RYOKU_PACMAN_CONF`.
 2. Names: amd → `libgl1-mesa-dri mesa-vulkan-drivers mesa-va-drivers firmware-amd-graphics`; intel → `intel-media-va-driver-non-free libmfx-gen1.2 mesa-vulkan-drivers firmware-sof-signed firmware-intel-graphics`; vulkan → `libvulkan1`; i386 counterparts when `dpkg --print-foreign-architectures | grep -qx i386` (replaces the `pacman-conf --repo-list | grep multilib` test, `nvidia.sh:178`).
-3. NVIDIA (Debian, Q4 option "NVIDIA repo"): install `cuda-keyring` from `https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/` (Ubuntu: `…/repos/ubuntu2604/x86_64/`), then Turing+ → `nvidia-open` (+ `nvidia-driver-pinning-<branch>` to hold a branch); Maxwell/Pascal/Volta → Debian `nvidia-driver nvidia-kernel-dkms` (550, non-free) because the NVIDIA debian13 repo has no 580 branch; Kepler → leave nouveau (or `nvidia-tesla-470-driver` on sid). i386: `nvidia-driver-libs:i386`. Prior art (open vs proprietary, i386 lock, keyring): `/home/me/src/debian13-stripped/config.sh:72-87`, `installer/engine.sh:539-556`.
+3. NVIDIA (Debian, Q4 option "NVIDIA repo"): install `cuda-keyring` from `https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/` (Ubuntu: `…/repos/ubuntu2604/x86_64/`), then Turing+ → `nvidia-open` (+ `nvidia-driver-pinning-<branch>` to hold a branch); Maxwell/Pascal/Volta → Debian `nvidia-driver nvidia-kernel-dkms` (550, non-free) because the NVIDIA debian13 repo has no 580 branch; Kepler → leave nouveau (or `nvidia-tesla-470-driver` on sid). i386: `nvidia-driver-libs:i386`.
    NVIDIA (Debian, option "Debian only"): Turing+ → `nvidia-open-kernel-dkms nvidia-driver firmware-nvidia-gsp` (trixie/sid contrib+non-free; missing in forky today; no RTX 50xx).
    NVIDIA (Ubuntu): `ubuntu-drivers install` (or `nvidia-driver-595-open` / `nvidia-driver-580`), which pulls prebuilt signed `linux-modules-nvidia-*` for the Ubuntu kernel.
 4. Kernel enumeration: replace `/usr/lib/modules/*/pkgbase` with `ls /usr/lib/modules`; headers → `linux-headers-amd64` (or `linux-headers-$(kver)`); the prebuilt-vs-DKMS split (`nvidia.sh:107-122,183-192`) disappears on Debian (DKMS only; Ubuntu prebuilt via ubuntu-drivers).
@@ -779,7 +777,7 @@ AUR: promote/repoint the tool-managed tree, autoboot entry path by kernel name
 7. `ryoku_boot_vmd` → dracut `add_drivers+=" vmd "` or `/etc/initramfs-tools/modules` `vmd`.
 8. `chroot_has_pkg` → `dpkg-query -W -f='${Status}' "$1" | grep -q 'install ok installed'`.
 9. Two-stage alongside refresh hook (`bootloader.sh:729-743`): ship the refresh as a dpkg file trigger (`interest-noawait /usr/share/limine/BOOTX64.EFI`) in a Ryoku boot package, or write `/etc/apt/apt.conf.d/80ryoku-limine-stage` with `DPkg::Post-Invoke { "…same cp logic…"; };` when the installer must create it as a file.
-10. efibootmgr inside a plain `chroot` needs `/sys/firmware/efi/efivars` bound (arch-chroot mounts efivarfs itself); prior art binds it: `/home/me/src/Debian13-Hyprland/lib/04-chroot-mounts.sh:74-84`.
+10. efibootmgr inside a plain `chroot` needs `/sys/firmware/efi/efivars` bound (arch-chroot mounts efivarfs itself).
 11. Services: same `systemctl enable` line. On Debian these units are already enabled by their packages' postinsts; keep the explicit enable and add explicit `systemctl disable` for units Ryoku intends off (e.g. `docker.service docker.socket`, `base.packages:180-186`).
 
 **Complexity:** High.
@@ -787,7 +785,6 @@ AUR: promote/repoint the tool-managed tree, autoboot entry path by kernel name
 **Issues / risks:**
 - Limine reads only FAT/ISO9660, so kernels/initrds or UKIs must sit on a FAT volume: that drives Q3 (dpkg writing into FAT `/boot` vs a copy hook into an ESP at `/efi`).
 - The whole tool-managed menu (UKI tree, Snapshots submenu, FIND_BOOTLOADERS) depends on porting limine-entry-tool's Arch-only integration; until then only the flat seed entry exists and goes stale on kernel upgrades.
-- No prior art for Limine on Debian on this machine: both local Debian installers use GRUB (`/home/me/src/debian13-stripped/installer/engine.sh:683-692`; Debian13-Hyprland cycled grub → zbm → systemd-boot).
 - Debian/Ubuntu ship signed `shim-signed` (trixie 1.51~1+deb13u1+16.1-2~deb13u1) and `grub-efi-amd64-signed`; Limine is not signed by anyone (Q5).
 
 ---
@@ -1085,8 +1082,7 @@ installer verification workflow.
 14. **Live-medium detection**: archiso paths in the TUI (`system.go:256-262`); Debian live-boot
     `/run/live/medium`, Ubuntu casper `/cdrom`.
 15. **Offline ISO**: a baked apt closure for one suite, i386 included, plus every NVIDIA branch
-    the driver step may pick; prior art bakes NVIDIA stores and a software store
-    (`/home/me/src/debian13-stripped/config.sh:72-110`).
+    the driver step may pick.
 16. **Version strings**: Ryoku's `-beta.N` versions need `~beta.N` in Debian versions for correct
     ordering; the installer's skew check and doctor/updater compare versions.
 17. **Secure Boot**: the Debian live ISO can boot under SB (signed shim), so the SB block moves
@@ -1117,7 +1113,7 @@ installer verification workflow.
    and Qt -dev on the user box) / switch to the Ryoku apt repo (requires the apt publishing
    pipeline first) / drop Debian support from the shell installer until the repo exists.
 7. **CachyOS variant.** Drop on Debian / replace with another kernel line (e.g. a Ryoku-built
-   kernel .deb, as `/home/me/src/hyprdebian-kernel` does for HyprDebian).
+   kernel .deb).
 8. **AUR set.** Build each as .deb in the Ryoku repo / mirror vendor .debs where they exist
    (localsend, voxtype) and build the rest / ship some as Flatpak (Zen).
 9. **Offline install.** Keep fully offline ISO (large baked closure per suite, plus NVIDIA
@@ -1154,12 +1150,6 @@ installer verification workflow.
 - `/etc/hosts`: Debian expects `127.0.1.1 <hostname>`; Ryoku deliberately writes none on Arch.
 - Live medium path: archiso `/run/archiso/bootmnt` vs live-boot `/run/live/medium` vs casper `/cdrom`.
 - `hwclock` is in `util-linux-extra` on Debian/Ubuntu.
-- Prior art on this machine: mmdebstrap rootfs + NVIDIA/software stores
-  (`/home/me/src/debian13-stripped/build-rootfs.sh:53-69`, `config.sh:63-110`); chroot binds with
-  `--make-rslave`, efivars, private `/run` (`/home/me/src/Debian13-Hyprland/lib/04-chroot-mounts.sh:11-84`);
-  `policy-rc.d` (`/home/me/src/Debian13-Hyprland/scripts/30-bootstrap.sh:248-263`); keyboard via
-  `/etc/default/keyboard` + `dpkg-reconfigure` (`/home/me/src/Debian13-Hyprland/scripts/40-system.sh:257-282`);
-  locale/hostname/sudo/fstab/initramfs/ESP-sync hooks (`/home/me/src/debian13-stripped/installer/engine.sh:350-456,518-643`).
 
 ## Debian/Ubuntu packages this section needs
 

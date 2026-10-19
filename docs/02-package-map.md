@@ -349,13 +349,13 @@ Also in this set, mapped in an earlier table (row cites this set too): `python`.
 **As-is on Debian:** NO — nothing in this set exists for Debian or Ubuntu.
 
 **Port steps:** depend on the CachyOS question below; for the "build it" option:
-1. Kernel: kernel.org 7.2.x tarball + CachyOS patch set, Debian kernel config as seed, `make bindeb-pkg` → `linux-image-*` + `linux-headers-*` debs in the port repo (prior art for a CI-built custom-kernel deb channel: `~/src/hyprdebian-kernel`, per the machine notes).
+1. Kernel: kernel.org 7.2.x tarball + CachyOS patch set, Debian kernel config as seed, `make bindeb-pkg` → `linux-image-*` + `linux-headers-*` debs in the port repo.
 2. `cachyos-settings` → deb of the CachyOS-Settings file tree with Depends `systemd-zram-generator inxi ananicy-cpp`; `ananicy-cpp` (cmake) + `cachyos-ananicy-rules` (files); `scx-scheds` (meson+cargo+libbpf); `proton-cachyos` tarball → `/usr/share/steam/compatibilitytools.d`.
 3. Replace keyring/mirrorlist packages with one apt source + `signed-by` keyring for the port repo.
 
 **Complexity:** High — a maintained kernel deb channel plus four userland packages.
 
-**Issues / risks:** trixie's 6.12 kernel is built without sched_ext (`# CONFIG_SCHED_CLASS_EXT is not set` in this host's `/boot/config-6.12.113+deb13-amd64`), so `scx-scheds` cannot run on the stock trixie kernel; Debian sid's 7.2 kernel has `CONFIG_SCHED_CLASS_EXT=y` (linux 7.2.11-1 `debian/config/config:6318`). The CachyOS x86-64-v3/v4 optimisation has no Debian archive equivalent.
+**Issues / risks:** trixie's 6.12 kernel is built without sched_ext (`# CONFIG_SCHED_CLASS_EXT is not set` in trixie's 6.12 kernel config), so `scx-scheds` cannot run on the stock trixie kernel; Debian sid's 7.2 kernel has `CONFIG_SCHED_CLASS_EXT=y` (linux 7.2.11-1 `debian/config/config:6318`). The CachyOS x86-64-v3/v4 optimisation has no Debian archive equivalent.
 
 **Questions for the human:**
 - CachyOS variant on Debian: (a) drop it — one ISO, plain Debian kernel; (b) port it — the port builds and tracks a CachyOS-patched kernel deb every upstream release plus 4 userland debs; (c) keep the variant but with Debian's own kernel from backports/forky/sid (sched_ext present, no BORE patches) plus port-built scx-scheds/ananicy-cpp/cachyos-settings.
@@ -380,7 +380,7 @@ Also in this set, mapped in an earlier table (row cites this set too): `python`.
 | `e2fsprogs` (core 1.47.4-1) | I:30 | ext4 tools (I:30) | e2fsprogs | 1.47.2-3+b12 | - | 1.47.4-1+b2 | 1.47.4-1+b2 | 1.47.2-3ubuntu4 | **SAME** |
 | `ntfsprogs` (extra 2026.9.28-1) | I:34 | ntfsresize/mkntfs for the Windows carve (I:31-34) | ntfs-3g | 1:2022.10.3-5+deb13u2 | - | 1:2026.9.28-2 | 1:2026.9.28-2 | 1:2022.10.3-5ubuntu1.1 | **RENAMED** Debian ntfs-3g ships /usr/sbin/ntfsresize, mkntfs, mkfs.ntfs (no ntfsprogs split). |
 | `ntfs-3g` (extra 2026.9.28-1) | I:35 | NTFS FUSE driver (I:35) | ntfs-3g | 1:2022.10.3-5+deb13u2 | - | 1:2026.9.28-2 | 1:2026.9.28-2 | 1:2022.10.3-5ubuntu1.1 | **SAME** trixie 2022.10.3, forky/sid 2026.9.28 = Arch. |
-| `reflector` (extra 2023-5) | I:41 | mirror ranking before pacstrap (I:38-41; lib/mirrors.sh) | (none; netselect-apt on Debian only) | - | - | - | - | - | **NOT-NEEDED-ON-DEBIAN** deb.debian.org / archive.ubuntu.com CDNs; netselect-apt exists in Debian (not Ubuntu). Prior art: debian13-stripped engine.sh netselect + InRelease probe. |
+| `reflector` (extra 2023-5) | I:41 | mirror ranking before pacstrap (I:38-41; lib/mirrors.sh) | (none; netselect-apt on Debian only) | - | - | - | - | - | **NOT-NEEDED-ON-DEBIAN** deb.debian.org / archive.ubuntu.com CDNs; netselect-apt exists in Debian (not Ubuntu). Probe the netselect winner's InRelease before use. |
 | `kbd` (core 2.10.0-1) | I:53 | `localectl list-keymaps` + loadkeys for the keyboard step (I:52-53) | kbd console-data (keymaps) console-setup keyboard-configuration | 2.7.1-2 | - | 2.10.0-1+b1 | 2.10.0-1+b1 | 2.7.1-2ubuntu2 | **SPLIT** Debian kbd ships 0 files under /usr/share/keymaps; console-data ships the 253 keymap files localectl lists. |
 | `cage` (extra 0.3.1-1) | I:58 | installer kiosk compositor (I:55-58) | cage | 0.2.0-2 | - | 0.3.1-1 | 0.3.1-1 | 0.2.1-1 (univ) | **SAME** trixie 0.2.0, forky/sid 0.3.1 = Arch. |
 | `foot` (extra 1.28.0-2) | I:59 | installer terminal (I:59) | foot | 1.21.0-2 | - | 1.28.0-1 | 1.28.0-1 | 1.25.0-1 (univ) | **SAME** |
@@ -397,7 +397,7 @@ Also in this set, mapped in an earlier table (row cites this set too): `base`, `
 
 **Port steps:**
 1. Build the live image with live-build (`live-boot` + `live-config` initramfs hooks) or mmdebstrap + squashfs; Ubuntu: casper.
-2. Replace `reflector` with deb.debian.org / archive.ubuntu.com, or the netselect + InRelease probe already written in `debian13-stripped` `engine.sh` (machine notes).
+2. Replace `reflector` with deb.debian.org / archive.ubuntu.com, or a netselect-apt ranking whose winner is probed for `dists/<suite>/InRelease` before use.
 3. Add `console-data` so `localectl list-keymaps` has data (Debian `kbd` ships no files under `/usr/share/keymaps`; `console-data` ships 253).
 4. Include `debootstrap`/`mmdebstrap` and Debian's `arch-install-scripts` (arch-chroot, genfstab) for the backend.
 5. Port-build `limine`, `ttf-jetbrains-mono-nerd`, `ryoku-cursors` for the live image.
@@ -451,7 +451,7 @@ Also in this set, mapped in an earlier table (row cites this set too): `base`, `
 | `asusctl` ([ryoku] 6.4.0 / extra 6.5.0-1) | U:243 opt | ASUS Aura lighting, added only when ryoku-hw-asus-aura detects it (U:243 opt; deploy.sh:126-133) | (none) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe 6.4.0 (github.com/OpenGamingCollective/asusctl; latest 6.5.0); cargo; rust-version 1.93. |
 | `qmk_hid` (-) | U:244 opt | QMK/VIA keyboard lighting (U:244 opt; 62-ryoku-qmk-hid.rules:2) | (none) | - | - | - | - | - | **MISSING-BUILD** github.com/FrameworkComputer/qmk_hid (tags only); cargo, edition 2024. |
 | `ryoku-desktop` ([ryoku] monorepo) | UH:23 · UN:24 | compositor-neutral desktop umbrella (UH:23; UN:24; deploy.sh:126) | (port-built) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku-desktop. |
-| `hyprland` (extra 0.56.2-4) | UH:25 | Hyprland compositor (UH:25; ryoku/wm/hyprland/caps.go:68) | hyprland | - | 0.55.2+ds-1~bpo13+1 | 0.56.2+ds-3 | 0.56.2+ds-3 | 0.53.3+ds-4 (univ) | **SAME** OLDER on trixie-bpo (0.55.2) and resolute (0.53.3): Ryoku's Lua config needs ≥ 0.55 (src/config/lua first appears at Hyprland v0.55.0) and the generated plugin keys target 0.56 (ryoku/wm/hyprland/config_plugins.go:244-245); forky/sid 0.56.2 = Arch. Prior art: debian13-stripped tools/build-debs.sh (22-component stack for trixie). |
+| `hyprland` (extra 0.56.2-4) | UH:25 | Hyprland compositor (UH:25; ryoku/wm/hyprland/caps.go:68) | hyprland | - | 0.55.2+ds-1~bpo13+1 | 0.56.2+ds-3 | 0.56.2+ds-3 | 0.53.3+ds-4 (univ) | **SAME** OLDER on trixie-bpo (0.55.2) and resolute (0.53.3): Ryoku's Lua config needs ≥ 0.55 (src/config/lua first appears at Hyprland v0.55.0) and the generated plugin keys target 0.56 (ryoku/wm/hyprland/config_plugins.go:244-245); forky/sid 0.56.2 = Arch. |
 | `hypr-dynamic-cursors` ([ryoku] monorepo) | UH:29 | Hyprland cursor plugin (UH:29) | (port-built) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe from git github.com/VirtCode/hypr-dynamic-cursors, compiled against the exact Hyprland headers. |
 | `ryoku-hypr-plugins` ([ryoku] monorepo) | UH:30 | hyprwm/hyprland-plugins build (UH:30) | (port-built; Debian hyprland-plugins 0.53/0.56 exists) | - | - | - | - | - | **MISSING-BUILD (Ryoku-own)** release/packages/ryoku-hypr-plugins from github.com/hyprwm/hyprland-plugins git; Debian's hyprland-plugins (bpo 0.53.0, forky/sid 0.56.0) is version-locked to Debian's Hyprland. |
 | `hyprglass` ([ryoku] monorepo) | UH:31 | Hyprland glass plugin (UH:31; config_plugins.go:236-240) | (port-built) | - | - | - | - | - | **MISSING-BUILD** [ryoku] recipe from github.com/hyprnux/hyprglass git (latest v0.10.0). |
@@ -473,7 +473,7 @@ Also in this set, mapped in an earlier table (row cites this set too): `go`, `qt
 **Port steps:**
 1. Translate each PKGBUILD's arrays to `debian/control` with the Debian names in the rows above (e.g. `xorg-xwayland`→`xwayland`, `bluez-utils`→`bluez`, `libqalculate`→`qalc`, `tesseract`→`tesseract-ocr`, `zbar`→`zbar-tools`, `pam-u2f`→`libpam-u2f, pamu2fcfg`, `qt6-*`→the qml6-module-*/libqt6* splits), add `pulseaudio-utils`, keep `Provides: ryoku-desktop-compositor` in the variants.
 2. Map `optdepends` to `Suggests:` (not installed, matches "never reinstalled") and keep the doctor-driven one-time delivery.
-3. Hyprland variant: package Hyprland ≥ 0.56 and its plugins built against those exact headers (prior art: `debian13-stripped/tools/build-debs.sh`, 22-component stack); niri variant: build `niri` and `xwayland-satellite` (cargo).
+3. Hyprland variant: package Hyprland ≥ 0.56 and its plugins built against those exact headers; niri variant: build `niri` and `xwayland-satellite` (cargo).
 4. Update the duplicated compositor lists in `caps.go` to Debian names.
 
 **Complexity:** High.
@@ -558,7 +558,7 @@ Every name that needs a port-built or repackaged deb on at least one base. "Need
 | xwayland-satellite | github.com/Supreeeme/xwayland-satellite add2795 (Arch 0.8.3) | cargo (MSRV 1.85) | `cargo build --release --locked` with libxcb dev headers | TBFSR |
 | Qt 6 stack (qt6-base, qt6-declarative, qt6-wayland, qt6-svg, qt6-multimedia(+ffmpeg), qt6-5compat, qt6-imageformats, qt6-shadertools, KF6 syntax-highlighting) | qt.io 6.9+ (Arch 6.12.0) | cmake | rebuild Debian's forky Qt 6.11.2 source packages on trixie (`dpkg-buildpackage` per source, in dependency order), then rebuild private-ABI dependents (qt6ct, quickshell) | T B |
 | quickshell | git.outfoxxed.me/quickshell/quickshell v0.3.2 | cmake | rebuild Debian sid's `quickshell` 0.3.2 source against the target Qt | T B R |
-| hyprland (+ hypridle, hyprpicker, hyprpolkitagent, xdg-desktop-portal-hyprland, hyprsunset) | hyprwm 0.56.2 stack | cmake/meson | rebuild forky/sid sources (or `debian13-stripped/tools/build-debs.sh`) | hyprland: T B R; satellites: T (and hyprsunset R) |
+| hyprland (+ hypridle, hyprpicker, hyprpolkitagent, xdg-desktop-portal-hyprland, hyprsunset) | hyprwm 0.56.2 stack | cmake/meson | rebuild forky/sid sources (or a from-git build of the upstream tags) | hyprland: T B R; satellites: T (and hyprsunset R) |
 | neovim | neovim 0.11.2+ (Arch 0.12.6) | cmake | rebuild forky's neovim 0.12.4 source on trixie | T B |
 | openrgb | OpenRGB 1.0 (Arch 1.1) | qmake/cmake | rebuild forky's openrgb source on trixie | T B |
 | gpu-screen-recorder | git.dec05eba.com/gpu-screen-recorder 6.1.4 | meson | `meson setup build -Dsystemd=true … && meson compile -C build` (Arch PKGBUILD); setcap on gsr-kms-server | T B R |

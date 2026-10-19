@@ -1,6 +1,6 @@
 # Agent brief: Ryoku -> Debian port deep dive
 
-Source repo (READ-ONLY, never modify): `/home/me/src/ryoku`, pinned at commit
+Source repo (READ-ONLY, never modify): `/home/me/src/ryokudebian-installer`, pinned at commit
 `98a0368253d9628be72b853985878a5db90e1547` (2026-09-26, version 0.75.5-beta.20).
 Ryoku is an Arch Linux distro: Hyprland or niri desktop, Quickshell/QML shell,
 Go daemons/CLI, Go TUI installer, archiso ISO, signed `[ryoku]` pacman repo.
@@ -29,16 +29,16 @@ system, build deps by Debian package name, build commands, install paths).
 - Issues, complexities, unforeseen problems: raise them plainly under
   "Issues / risks". That is the point of this pass.
 - NEVER install packages on this host (no apt/pip/npm/cargo install, no sudo).
-  Never modify `/home/me/src/ryoku`. Read-only investigation plus writing your
+  Never modify `/home/me/src/ryokudebian-installer`. Read-only investigation plus writing your
   assigned output file(s).
-- Debian/Ubuntu availability: use `/home/me/src/ryoku-debian-port/tools/pkgver
+- Debian/Ubuntu availability: use `/home/me/src/ryokudebian-installer/tools/pkgver
   <pkg> [pkg...]` (batch many names per call). It prints trixie, trixie-bpo,
   forky, sid, resolute versions. Use Debian names; when unsure of the Debian
   name, try candidates or query `https://sources.debian.org/api/search/<name>/`
   or `https://packages.debian.org/search?keywords=<name>&searchon=names&suite=all`.
 - Upstream versions: `git ls-remote --tags <url>` or the GitHub API via `gh api`.
 - Navigation: `prowl-agent search|find|def|outline|references` (run from
-  /home/me/src/ryoku) is faster than grepping blind; grep for literals.
+  /home/me/src/ryokudebian-installer) is faster than grepping blind; grep for literals.
 - Known Debian-vs-Arch differences to check everywhere: Qt6 QML dir is
   `/usr/lib/x86_64-linux-gnu/qt6/qml` (Arch: `/usr/lib/qt6/qml`); Qt6 tools
   (`qsb`, `qmllint`) live in `/usr/lib/qt6/bin` and package names differ;
@@ -48,11 +48,6 @@ system, build deps by Debian package name, build commands, install paths).
   arch-chroot/genfstab/pacstrap calls; pacman hooks (`*.hook`) vs dpkg
   triggers / apt hooks; `multilib`; systemd unit or binary names that differ
   (e.g. `fd`->`fdfind`, `bat`->`batcat`); `/usr/share/libalpm`; AUR.
-- Prior art on this machine (read-only, useful for Hyprland-stack-on-Debian
-  recipes): `/home/me/src/debian13-stripped/tools/build-debs.sh` (builds a
-  22-component Hyprland deb stack for trixie) and `/home/me/src/Debian13-Hyprland`
-  (an earlier installer + ISO builder for trixie). Cite them where a recipe
-  already exists there.
 
 ## Output format (Markdown, one file, path given in your task)
 

@@ -53,8 +53,7 @@ section). **GAP** means the base can't meet the floor without a larger rebuild.
   and its browsers are snaps.
 - **trixie** is the only frozen Debian base. To reach the floors it needs a
   self-maintained Qt 6.11 stack, a Hyprland 0.56 stack built with GCC 16 (not in
-  trixie), and quickshell. Prior art for the Hyprland part on trixie is
-  `/home/me/src/debian13-stripped/tools/build-debs.sh`; it pins sid's g++-16, which
-  pulls sid's `libc6`/`libstdc++6` onto installed systems.
+  trixie), and quickshell. Pinning sid's g++-16 for the Hyprland build pulls sid's
+  `libc6`/`libstdc++6` onto installed systems.
 
 The base is decision **D-01** in [00-decisions.md](00-decisions.md).

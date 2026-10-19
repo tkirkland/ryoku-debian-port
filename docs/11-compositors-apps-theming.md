@@ -233,22 +233,20 @@ hyprgraphics 0.5.1, hyprwire 0.3.1, hyprwayland-scanner 0.4.6, hyprland-protocol
    `hyprpolkitagent` 0.1.3 (0.2.0 needs `libhyprtoolkit-dev` 0.6.0; bpo has 0.5.3),
    `hyprcursor-util`.
 
-Recipe T2, the prior-art from-git stack
-(`/home/me/src/debian13-stripped/tools/build-debs.sh`). It ignores Debian's hypr
+Recipe T2, a from-git stack. It ignores Debian's hypr
 packaging and builds upstream release tags with cmake/meson into hand-made debs in a
 debootstrapped buildroot under `work/`:
-- Order (`build-debs.sh:33-40`): `wayland wayland-protocols xkbcommon libinput lua
+- Order: `wayland wayland-protocols xkbcommon libinput lua
   hyprwayland-scanner hyprutils hyprlang hyprcursor hyprgraphics hyprland-protocols
   hyprwire aquamarine hyprland hyprtoolkit hyprland-guiutils hyprlock hypridle` (then
   its own extras swww hyprdim wdisplays uwsm walker elephant, which Ryoku does not
-  use), xdph last and best-effort (`:54`, `:815-823`). Ryoku additionally needs
+  use), xdph last and best-effort. Ryoku additionally needs
   hyprsunset, hyprpicker and hyprpolkitagent in that table.
-- Compiler: `CC=gcc-16 CXX=g++-16` from a pinned sid source (`:24-26`,
-  `/home/me/src/debian13-stripped/config.sh:149-169`); the pin allows sid's
+- Compiler: `CC=gcc-16 CXX=g++-16` from a pinned sid source; the pin allows sid's
   `libc6`/`libstdc++6`/gcc runtime family at priority 500.
 - Lua: built as a static PIC `liblua.a` with a generated `lua.pc` (Version 5.5.x,
   satisfies `lua>=5.5`) and a `lua.hpp` shim, so Hyprland carries no runtime Lua
-  dependency (`build-debs.sh:567-602`).
+  dependency.
 - Debian libs replaced: `DEB_SUPERSEDES` emits versioned `Provides` plus
   arch-qualified `Conflicts`/`Replaces` for libwayland*, libxkbcommon*, libinput*
   (`:122-126`, `:536-547`); unqualified Conflicts once removed Hyprland when the
@@ -331,9 +329,8 @@ ahead of the Hyprland release that uses them. On 2026-07-17/18 hyprutils 0.14.0
 (`.so.12 -> .so.13`) and aquamarine 0.13.0 (`.so.11 -> .so.12`) were tagged before any
 Hyprland release built against them; Hyprland 0.55.4 does not compile against
 hyprutils 0.14, and a "latest tag" stack build produced a golden image whose Hyprland
-could not load (greetd crash loop). The prior art handles it with a `TAG_PIN` map used
-only during such windows (`build-debs.sh:137-140`, "Hold a component at a known-good tag
-ONLY during an upstream pre-release skew window") and the link-coherence gate. Today
+could not load (greetd crash loop). The fix is a tag-pin map that holds a component at a known-good tag only during such
+an upstream pre-release skew window, plus a link-coherence gate. Today
 (2026-10-17) there is no skew: Hyprland v0.56.2 needs hyprutils >= 0.14.0 and the newest
 tags are hyprutils v0.14.2 and aquamarine v0.15.1. A Debian-source rebuild (T1/resolute)
 inherits Debian's choice of library versions and is not exposed to this, but a
@@ -346,14 +343,12 @@ library backports, one of which replaces a core system library) and on resolute 
 **Issues / risks:**
 - **No GCC 16 for trixie.** Debian built Hyprland 0.56.1/0.56.2 only with GCC 16.x
   (buildd logs: "CXX compiler identification is GNU 16.1.0 / 16.2.0"), while the
-  trixie-backports 0.55.2 build used GCC 14.2.0. The prior art states "Hyprland >=0.56
-  is C++26; trixie's gcc-14/15 libstdc++ can't compile it"
-  (`build-debs.sh:24-25`). Whether 0.56.2 plus Debian's `gcc-port.patch` builds with
+  trixie-backports 0.55.2 build used GCC 14.2.0. Hyprland >= 0.56 is C++26 and
+  trixie's gcc-14/15 libstdc++ can't compile it. Whether 0.56.2 plus Debian's `gcc-port.patch` builds with
   gcc-14 is not verified. The available ways to get GCC 16 on trixie:
-  (a) install sid's `g++-16` with an apt pin, as the prior art does, which also pulls
+  (a) install sid's `g++-16` with an apt pin, which also pulls
   sid's `libc6` and `libstdc++6` into the build root and, through Hyprland's
-  `libstdc++6 (>= 16)` dependency, into every installed system
-  (`/home/me/src/debian13-stripped/config.sh:160-169`);
+  `libstdc++6 (>= 16)` dependency, into every installed system;
   (b) rebuild the forky `gcc-16` source for trixie (a multi-hour toolchain build whose
   `libstdc++6` then replaces trixie's system-wide).
 - The same C++26 requirement reaches the user's machine: runtime plugin rebuilds
@@ -373,13 +368,12 @@ library backports, one of which replaces a core system library) and on resolute 
   depend); install it explicitly so Hyprland's own dialogs behave as on Arch.
 
 **Questions for the human:**
-- trixie compiler route. Options: (a) sid `g++-16` pinned into the build root, as the
-  prior art does: fastest, but every installed system then runs sid's `libc6` and
+- trixie compiler route. Options: (a) sid `g++-16` pinned into the build root: fastest, but every installed system then runs sid's `libc6` and
   `libstdc++6`; (b) backport `gcc-16` to trixie: clean dependency graph, a multi-hour
   toolchain build that must be repeated for each GCC point release; (c) try gcc-14
   with Debian's patch set first and fall back to (a) or (b) only if it fails.
 - trixie recipe. Options: T1 (Debian sources, Debian package names, `hyprland-abi-*`
-  Provides, multiarch headers; least code to own) or T2 (prior-art from-git builder,
+  Provides, multiarch headers; least code to own) or T2 (from-git builder,
   Arch-identical paths, owns every library including wayland/xkbcommon/libinput).
 
 ---
@@ -588,7 +582,7 @@ provider's package tier does not see them.
 3. Runtime coupling in deb terms. With a Debian-packaged (or T1-rebuilt) Hyprland, run
    `. /usr/lib/x86_64-linux-gnu/hyprland/debian-abi-helper` in
    `override_dh_gencontrol` and emit `Depends: ${hyprland:ABI}` exactly like Debian's
-   `hyprland-plugins`. With a T2 (prior-art) Hyprland, emit
+   `hyprland-plugins`. With a T2 (from-git) Hyprland, emit
    `Depends: hyprland (= <exact version>)` and rebuild every plugin deb in the same
    pipeline run as hyprland.
 4. Either keep these packages out of `ryoku-desktop-hyprland`'s hard Depends (make
@@ -861,7 +855,7 @@ the socket path from `$NIRI_SOCKET` (`session.go:29-35`).
 | Arch pkg | Used for (cite) | Debian/Ubuntu pkg | trixie | trixie-bpo | forky | sid | resolute | Min version Ryoku needs (why, cite) |
 |---|---|---|---|---|---|---|---|---|
 | niri (extra 26.04-1) | compositor (`PKGBUILD:26`) | none, build it (see below) | - | - | - | - | - (third-party PPA ppa:avengemedia/danklinux only, per niri docs Getting-Started.md:18-22) | 26.04 (background-effect, table above) |
-| xwayland-satellite | X11 bridge niri spawns (`PKGBUILD:31`; `autostart.kdl:6-9`) | none, build it (next section) | - | - | - | - | - | >= 0.8.3, or upstream commit add2795 (`xwayland-satellite/PKGBUILD:96-98`) |
+| xwayland-satellite | X11 bridge niri spawns (`PKGBUILD:31`; `autostart.kdl:6-9`) | none, build it (next section) | - | - | - | - | - | >= 0.8.3, or upstream commit add2795 (`xwayland-satellite/PKGBUILD:18-20`) |
 | xdg-desktop-portal-gnome | ScreenCast/Screenshot backend (`PKGBUILD:32-34`; `ryoku/wm/niri/caps.go:99`) | xdg-desktop-portal-gnome | 48.0-2 | - | 50.0-1 | 50.0-1 | 50.0-0ubuntu1 | none pinned by Ryoku. Arch ships 51.0. |
 | xdg-desktop-portal-gtk | FileChooser routed to gtk (`ryoku/niri/niri-portals.conf:8-9`) | xdg-desktop-portal-gtk | 1.15.3-1 | - | 1.15.3-2+b1 | 1.15.3-2+b1 | 1.15.3-2ubuntu1 | portals.conf support needs xdg-desktop-portal >= 1.17 (met everywhere) |
 | xdg-desktop-portal | frontend, try-restarted at login (`autostart.kdl:30`) | xdg-desktop-portal | 1.20.3+ds-1 | - | 1.22.1+ds-1 | 1.22.1+ds-1 | 1.21.1+ds-1ubuntu3.1 | >= 1.17 (portals.conf) |
@@ -1265,8 +1259,7 @@ version. Plugin ABI verification and rebuild depend on how the Hyprland deb is b
    - `pickCopy` loads the first copy unverified (`config_plugins_tier.go:361-362`).
    Upstream `hyprpm.toml` `commit_pins` are keyed by upstream Hyprland commit, so the
    hash must also be the *upstream tag's* commit, with Debian patches applied as quilt
-   patches and not as new commits. Prior art already clones with git
-   (`/home/me/src/debian13-stripped/tools/build-debs.sh:272-277`). For a tarball
+   patches and not as new commits. A git-clone build has it. For a tarball
    build, export `GIT_COMMIT_HASH=<40-hex tag commit>` in debian/rules. Debian's own `hyprland-dev` 0.56.2+ds-3 already carries `GIT_COMMIT_HASH "efb50993780079460b0cbed1363e2166a2de1d9f"` (the v0.56.2 tag commit) and the real library versions in `version.h` (checked by extracting the deb), so forky/sid need nothing here.
 3. Keep the package plugin dir `/usr/lib/hyprland/plugins` (`config_plugins.go:16`) in
    the plugin debs. It is a private, non-multiarch dir, which Debian policy allows.
@@ -1279,9 +1272,8 @@ Hyprland's build must preserve the upstream commit and that a matching C++ compi
 exists on the user's machine.
 
 **Issues / risks:**
-- Prior art states "Hyprland >=0.56 is C++26; trixie's gcc-14/15 libstdc++ can't
-  compile it", and builds with `g++-16` from pinned sid
-  (`/home/me/src/debian13-stripped/tools/build-debs.sh:24-26`).
+- Hyprland >= 0.56 is C++26; trixie's gcc-14/15 libstdc++ can't compile it, so it
+  builds with `g++-16` from pinned sid.
   - Debian's default `c++` is g++ 14.2 on trixie (gcc-defaults 1.220), g++ 16.1 on forky
     and sid (`g++ 4:16.1.0-3`), and g++ 15.2 on resolute.
   - gcc-16 is in forky and sid as 16.2.0-3 and in resolute universe as a snapshot

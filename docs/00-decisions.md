@@ -13,6 +13,15 @@ phase. **Tier 3** decisions can wait until work reaches that component.
 ## Tier 1: plan-shaping
 
 ### D-01 Base suite
+**Decided 2026-10-19: trixie, on the Debian13-Hyprland framework** (the build running
+on the reference machine). Goal: behaviour identical to Arch Ryoku, no local patching.
+Already solved there and reused: the Hyprland stack from git (= D-01c T2), GCC 16 via
+the sid toolchain pin (= D-01a (a)), NVIDIA from the
+CUDA repo (= D-05 (b)), Secure Boot via Debian's signed shim + signed GRUB + signed
+kernel with a per-install MOK key signing every DKMS module (= D-04 (b)), installer
+and ISO pipeline. Still to add: Qt 6.11 + quickshell (D-01b (a)), Go >= 1.26.4, and
+the snapshot/rollback chain (D-02).
+
 Options: Debian 13 trixie (+ backports), Debian forky (testing), Debian sid, Ubuntu
 26.04 (resolute). Facts: [01-base-comparison.md](01-base-comparison.md).
 - **forky/sid:** Qt 6.11.2, Quickshell 0.3.2 and Hyprland 0.56.2 are all in the
@@ -27,7 +36,7 @@ Options: Debian 13 trixie (+ backports), Debian forky (testing), Debian sid, Ubu
 
 Sub-decisions that exist only for some bases:
 - **D-01a (trixie) GCC 16 route for Hyprland ≥ 0.56:** (a) pin sid's `g++-16` into
-  the build root as `debian13-stripped` does; installed systems then run sid's
+  the build root; installed systems then run sid's
   `libc6`/`libstdc++6`. (b) Backport `gcc-16` to trixie: a clean graph, but a
   multi-hour toolchain build redone for each GCC point release. (c) Try gcc-14 with
   Debian's patch set first, falling back to (a) or (b). [11 §Hyprland]
@@ -38,7 +47,7 @@ Sub-decisions that exist only for some bases:
   Either way it is not pixel-identical. [09a]
 - **D-01c (trixie, resolute) Hyprland stack source:** T1 rebuild Debian's forky
   sources (Debian package names, `hyprland-abi-*` Provides, the least code to own),
-  or T2 use the from-git builder from the prior art (Arch-identical paths; owns
+  or T2 a from-git builder (Arch-identical paths; owns
   every library, wayland/xkbcommon/libinput included). [11]
 
 ### D-02 Bootloader and rollback chain
@@ -54,6 +63,18 @@ Sub-decisions that exist only for some bases:
   doctor reconcilers are rewritten, and the Limine branding becomes a GRUB theme.
 [05 §6, 06 §Limine]
 
+**Tested 2026-10-19 ([13](13-limine-secure-boot-zfs-test.md)):** stock Limine 12.9.4
+runs behind Debian's shim + MOK once a `.sbat` section is added at packaging time, and
+it boots a builtin-ZFS kernel's ZFS root and ZFS snapshots from the ESP. Secure Boot
+is only enforced with the config hash enrolled, so every menu rewrite needs
+`enroll-config` + `sbsign` with the per-install MOK key. So (a) no longer loses
+Secure Boot, and D-04 (d) is proven in a VM.
+
+**Decided 2026-10-19: both, chosen at install time.** The installer offers GRUB or
+Limine, both behind shim + MOK. Cost: the boot guard, the restore guide and the boot
+doctor reconcilers exist once per bootloader, and the snapshot-entry tool writes
+both menu formats.
+
 ### D-03 One codebase or a fork
 - **(a) Fork:** replace pacman with apt in place. The smallest diff, but it diverges
   from upstream Ryoku on every file that touches packages.
@@ -61,6 +82,11 @@ Sub-decisions that exist only for some bases:
   tagged twins (or skips) for the 28 Arch-only and 19 partly-Arch doctor reconcilers.
   A smaller merge surface against upstream.
 [05 Q-1]
+
+**Decided 2026-10-19: (a) fork, used as the port's own original.** Debian changes are
+made in place. A scheduled workflow fetches upstream `Ryoku-dev/ryoku` and merges it;
+a clean merge that passes the build/tests lands directly, while a conflict (or a
+clean merge that fails the checks) opens a PR instead.
 
 ### D-04 Secure Boot target
 - (a) None: refuse Secure Boot, as Ryoku does today.
@@ -79,7 +105,7 @@ DKMS modules (NVIDIA) and disables hibernation (`resume=`). [06 §Secure Boot, 0
   `nvidia-current`/`nvidia-current-open`, so Ryoku's `modinfo nvidia` probes (in
   `nvidia.sh`, the guard and `reconcile_hardware.go`) must accept those names.
 - **(b) NVIDIA CUDA repo for debian13 (590–615, `nvidia-open`):** Arch-equivalent
-  versions and module names (prior art in both local projects). A third-party repo
+  versions and module names. A third-party repo
   whose `dkms` overrides Debian's. No Maxwell/Pascal/Volta branch, so those cards fall
   back to (a), which means two origins and pinning.
 - **(c) Ubuntu `ubuntu-drivers`:** resolute only; 580/595/615 with prebuilt signed
@@ -96,8 +122,7 @@ Kepler has no driver on trixie, forky or resolute. [07 §NVIDIA, 08 Q4]
 - **CachyOS:**
   - (a) Drop the CachyOS ISO variant and the Hub opt-in.
   - (b) Opt-in only, as in `docs/kernels.md`: a Ryoku-built CachyOS kernel deb (from
-    the pre-patched tarball + BORE patch + config, `make bindeb-pkg`, clang ThinLTO;
-    pipeline prior art in `~/src/hyprdebian-kernel`).
+    the pre-patched tarball + BORE patch + config, `make bindeb-pkg`, clang ThinLTO).
   - (c) Full variant: that kernel plus `cachyos-settings`, `ananicy-cpp` + rules,
     `scx-scheds` and the `proton-cachyos` tarball, all self-built.
   - (d) A variant on Debian's own 7.2 kernel (sched_ext present, no BORE) plus
@@ -107,6 +132,23 @@ Kepler has no driver on trixie, forky or resolute. [07 §NVIDIA, 08 Q4]
   Debian's dkms does that automatically was not verified. A self-built kernel needs
   MOK signing under Secure Boot (D-04).
 [02 §CachyOS, 06 §Kernels, 07 Q4]
+
+**Decided 2026-10-19: kernel chosen at install time.**
+- **Debian line (default):** Debian's own 6.12 LTS and 7.x kernels, rebuilt from Debian's
+  source package with ZFS builtin, published by `tkirkland/ryokudebian-kernel` (public).
+- **CachyOS:** CachyOS kernel with ZFS builtin, published by
+  `tkirkland/ryokudebian-kernel-cachyos` (public).
+
+Three variants (Debian 6.x, Debian 7.x, CachyOS), all ZFS builtin, in two repos. The Debian
+variants build from Debian's own kernel source package. Each variant keeps its current
+and previous release only (six releases at most) so a bad build can be rolled back.
+
+Both are self-built, so on Secure Boot machines they boot inside a UKI signed with the
+per-install MOK key (proven in [13](13-limine-secure-boot-zfs-test.md)). Two follow-ups
+this creates: these kernels lack Debian's "lock down under Secure Boot" patch, so
+lockdown needs `lockdown=integrity` in the signed UKI cmdline or that patch carried in
+the build; and a clang-built CachyOS kernel needs NVIDIA's DKMS modules built with
+`LLVM=1` (unverified).
 
 ---
 
@@ -236,8 +278,7 @@ repo and delete the external channel code. [05 Q-4, 09b]
   needs an explicit disable) or `docker-ce` (Docker Inc. 29.9.1, matching Arch; no
   forky suite).
 - **D-25 Recommends policy:** apt installs Recommends by default and pacman has none.
-  Either `--no-install-recommends` plus a keep-list (prior art: `wanted_recommends` in
-  `debian13-stripped`), or install Recommends.
+  Either `--no-install-recommends` plus a keep-list, or install Recommends.
 - **D-26 AAC Bluetooth codec:** (a) none (Debian/Ubuntu ship no fdk-aac), or (b) a
   rebuilt `pipewire` with fdk-aac in the Ryoku repo, which forks a core audio package
   that then tracks every pipewire update.
@@ -307,8 +348,7 @@ repo and delete the external channel code. [05 Q-4, 09b]
     `linux`/`linux-cachyos` logic.
 - **D-40 ISO toolchain:**
   - (a) live-build: declarative, but Debian-only and GRUB-only for EFI.
-  - (b) An mmdebstrap + squashfs + xorriso script: Debian and Ubuntu, any EFI loader;
-    prior art in `debian13-stripped`.
+  - (b) An mmdebstrap + squashfs + xorriso script: Debian and Ubuntu, any EFI loader.
 - **D-41 Initramfs generator:**
   - initramfs-tools: Debian default, crypttab-driven; UKIs need `ukify`.
   - dracut: a direct HOOKS mapping, `dracut --uefi`, and limine-entry-tool already has

@@ -828,7 +828,7 @@ same tree under `/usr/share/ryoku/config`.
 | `reconcileLimineUKITree` | `ryoku-pkg-aur-add limine-mkinitcpio-hook` | `reconcile_limine.go:694` |
 | `reconcileQMK` | `ryoku-pkg-aur-add qmk-hid` | `reconcile_qmk.go:18` |
 | `reconcileFingerprintModule` | `ryoku-pkg-aur-add pam-fprint-grosshack` | `reconcile_fingerprint.go:80` |
-| `ryoku-pkg-aur-add` itself | `yay`/`paru -S --needed --noconfirm <pkg>` per package, refuses root | `system/extras/ryoku-pkg-aur-add:31-66` |
+| `ryoku-pkg-aur-add` itself | `yay`/`paru -S --needed --noconfirm <pkg>` per package, refuses root | `system/extras/ryoku-pkg-aur-add:20-48` |
 | CLI package | `optdepends=('yay: AUR package updates during ryoku update')` | `release/packages/ryoku/PKGBUILD:17` |
 
 `limine-snapper-sync` and `limine-mkinitcpio-hook` are also built in the `[ryoku]` repo
@@ -1097,9 +1097,8 @@ own variant.
   backports (NotAutomatic, priority 100).
 - **I-3 Held packages.** With `apt-mark hold`, `apt-get install -y` aborts ("Held packages were changed and
   -y was used without --allow-change-held-packages"). pacman with an explicit target on `IgnorePkg` asks
-  and `--noconfirm` answers yes. Prior art on this machine holds the 20 Hyprland stack .debs
-  (`~/.claude/machine-state.md`, Debian13-Hyprland 2026-07-11) to stop Debian's libxkbcommon evicting
-  them. If the Ryoku repo serves held names, the update must pass `--allow-change-held-packages`, or skip
+  and `--noconfirm` answers yes. A self-built Hyprland stack is typically held (`apt-mark hold`) to stop Debian's libxkbcommon
+  evicting it. If the Ryoku repo serves held names, the update must pass `--allow-change-held-packages`, or skip
   and report them (Q-7).
 - **I-4 Backports.** Hyprland is in trixie only via trixie-backports (0.55.2+ds-1~bpo13+1), and quickshell
   too (0.3.0-1~bpo13+1). On trixie, Ryoku debs depending on bpo versions need `-t trixie-backports`, or a

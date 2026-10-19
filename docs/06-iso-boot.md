@@ -159,11 +159,8 @@ http://snapshot.debian.org/archive/debian/<YYYYMMDDTHHMMSSZ>/` (replaces
 `RYOKU_ISO_REPRO`, `build.sh:144-149`). The squashfs block size (`-b 1M`,
 `profiledef.sh:23`) has no lb_config flag.
 
-*Option B: custom pipeline (Debian and Ubuntu).* Prior art:
-`/home/me/src/debian13-stripped/build-rootfs.sh:53-56` (mmdebstrap) +
-`/home/me/src/debian13-stripped/build-iso.sh:33-78` (squashfs + grub-mkrescue);
-`/home/me/src/Debian13-Hyprland/tools/iso-assemble.sh:409-455` (xorriso with
-shim/signed GRUB replay and appended EFI partition).
+*Option B: custom pipeline (Debian and Ubuntu):* mmdebstrap, then squashfs +
+grub-mkrescue, or xorriso with shim/signed GRUB replay and an appended EFI partition.
 
 1. `export SOURCE_DATE_EPOCH=$(git -C "$REPO_ROOT" log -1 --pretty=%ct)` (same as `build.sh:36-40`).
 2. Root filesystem (replaces mkarchiso's pacstrap):
@@ -185,7 +182,7 @@ shim/signed GRUB replay and appended EFI partition).
    Ubuntu: same command with suite `resolute`, archive `http://archive.ubuntu.com/ubuntu`, components `main restricted universe multiverse`.
 3. Bake steps 2-4e of `build.sh` into `work/rootfs` unchanged (Go builds are distro-neutral; Ryoku.Blobs must be built inside a chroot of the target suite so it links the target Qt).
 4. `mksquashfs work/rootfs iso/live/filesystem.squashfs -comp zstd -Xcompression-level 19 -b 1M -noappend` (options of `profiledef.sh:23`).
-5. `cp work/rootfs/boot/vmlinuz-$KVER iso/live/vmlinuz; cp work/rootfs/boot/initrd.img-$KVER iso/live/initrd.img` (kernel selection as `debian13-stripped/build-iso.sh:41-49`).
+5. `cp work/rootfs/boot/vmlinuz-$KVER iso/live/vmlinuz; cp work/rootfs/boot/initrd.img-$KVER iso/live/initrd.img`.
 6. `printf '%s\n' "Ryoku <name> <version> $(date -u -d@$SOURCE_DATE_EPOCH +%F)" > iso/.disk/info` (required: Debian's signed CD GRUB searches `/.disk/info` to find its prefix, grub2 `debian/build-efi-images:62-74`).
 7. Write `iso/boot/grub/grub.cfg`, `iso/boot/grub/loopback.cfg`, `iso/isolinux/isolinux.cfg` (contents under "Live boot menus").
 8. EFI image (shim + Debian-signed GRUB, Secure Boot capable):
@@ -196,7 +193,7 @@ shim/signed GRUB replay and appended EFI partition).
    mcopy -i iso-efi.img /usr/lib/grub/x86_64-efi-signed/gcdx64.efi.signed ::/EFI/boot/grubx64.efi
    mcopy -i iso-efi.img /usr/lib/shim/mmx64.efi.signed                   ::/EFI/boot/mmx64.efi
    ```
-   `mmx64.efi` is mandatory: without it shim dies with `import_mok_state() failed` on a machine with a pending MOK request (`Debian13-Hyprland/tools/iso-assemble.sh:340-347`).
+   `mmx64.efi` is mandatory: without it shim dies with `import_mok_state() failed` on a machine with a pending MOK request.
 9. BIOS: `cp /usr/lib/ISOLINUX/isolinux.bin /usr/lib/syslinux/modules/bios/{ldlinux,vesamenu,libcom32,libutil,reboot,poweroff}.c32 iso/isolinux/`.
 10. Assemble with the same xorriso flags archiso v91 uses (swap only the EFI payload):
     ```sh
@@ -210,7 +207,7 @@ shim/signed GRUB replay and appended EFI partition).
       -eltorito-alt-boot -e --interval:appended_partition_2:all:: -no-emul-boot \
       -output "out/ryoku-$(date -u -d@$SOURCE_DATE_EPOCH +%Y.%m.%d)-x86_64.iso" iso/
     ```
-    xorriso derives volume timestamps from `SOURCE_DATE_EPOCH`. Alternative without Secure Boot: `grub-mkrescue -o out.iso iso -- -volid RYOKU_...` (`debian13-stripped/build-iso.sh:67-78`, which stages `grub-pc-bin` by `apt-get download` + `dpkg -x` and binds it over `/usr/lib/grub` inside `unshare -m` so nothing is installed on the host).
+    xorriso derives volume timestamps from `SOURCE_DATE_EPOCH`. Alternative without Secure Boot: `grub-mkrescue -o out.iso iso -- -volid RYOKU_...` (stage `grub-pc-bin` by `apt-get download` + `dpkg -x` and bind it over `/usr/lib/grub` inside `unshare -m`, so nothing is installed on the host).
 11. `sha256sum *.iso > SHA256SUMS` (unchanged, `build.sh:297-298`).
 
 **Complexity:** High. Every assembly step changes tool; the bake steps (2-4e) survive.
@@ -219,12 +216,12 @@ shim/signed GRUB replay and appended EFI partition).
 - live-build's EFI path is GRUB only (`functions/configuration.sh:632`); the systemd-boot UEFI menu (`efiboot/loader/`) cannot be reproduced with live-build. Option B can use systemd-boot (`systemd-boot-efi` ships `/usr/lib/systemd/boot/efi/systemd-bootx64.efi`), but then kernel+initrd must live inside the FAT efi image (systemd-boot reads FAT only) and Secure Boot needs shim + Debian's signed `systemd-boot-efi-amd64-signed` (257.13+1~deb13u1) renamed `grubx64.efi`; not tested here.
 - Debian's modern live-build is not in Ubuntu: resolute carries the Ubuntu fork `3.0~a57-1ubuntu54`. An Ubuntu base needs Option B (mmdebstrap 1.5.7 and `live-boot` 1:20250815 are in resolute) or Ubuntu's own `casper` (26.04.2).
 - CI comment says `SOURCE_DATE_EPOCH="$(date -u +%s)"` makes builds reproducible (`build-iso-reusable.yml:172-174`), but `build.sh:36-38` overwrites it with the commit time whenever git history exists (CI checks out with `fetch-depth: 0`, `:95`). The CI value is dead.
-- Stock Debian live GRUB configs have no `timeout` and isolinux uses `timeout 0` (menus wait forever, `Debian13-Hyprland/tools/iso-assemble.sh:390-404`); a custom grub.cfg must set `timeout` itself (Ryoku's syslinux uses `TIMEOUT 50`, `syslinux/archiso_sys.cfg:4`; systemd-boot `timeout 5`, `efiboot/loader/loader.conf:1`).
-- mmdebstrap/mkinitramfs in a chroot read the build host's `/proc` (mdadm `mkconf` leaked host arrays into the image, `debian13-stripped/build-rootfs.sh:579-588`); scrub `/etc/mdadm/mdadm.conf ARRAY` lines and `/etc/machine-id`.
-- Host rule from the brief/user: tools missing on the build host must be staged with `apt-get download` + `dpkg -x`, never installed (`debian13-stripped/build-iso.sh:9-27`).
+- Stock Debian live GRUB configs have no `timeout` and isolinux uses `timeout 0` (menus wait forever); a custom grub.cfg must set `timeout` itself (Ryoku's syslinux uses `TIMEOUT 50`, `syslinux/archiso_sys.cfg:4`; systemd-boot `timeout 5`, `efiboot/loader/loader.conf:1`).
+- mmdebstrap/mkinitramfs in a chroot read the build host's `/proc` (mdadm `mkconf` leaks host arrays into the image); scrub `/etc/mdadm/mdadm.conf ARRAY` lines and `/etc/machine-id`.
+- Host rule from the brief/user: tools missing on the build host must be staged with `apt-get download` + `dpkg -x`, never installed.
 
 **Questions for the human:**
-- ISO toolchain: (a) live-build: declarative `lb config`, Debian-only, GRUB-only EFI, built-in reproducibility switch; (b) mmdebstrap + squashfs + xorriso script: works for Debian and Ubuntu, any EFI loader, the script owns every step (~150 lines, prior art in debian13-stripped).
+- ISO toolchain: (a) live-build: declarative `lb config`, Debian-only, GRUB-only EFI, built-in reproducibility switch; (b) mmdebstrap + squashfs + xorriso script: works for Debian and Ubuntu, any EFI loader, the script owns every step (~150 lines).
 
 ---
 
@@ -309,7 +306,7 @@ pacstrapped from `system/packages` (`packages.x86_64:1-6`). `pacman.conf` enable
 - `usr/local/bin/ryoku-installer-session`: exports `RYOKU_REPO=/usr/share/ryoku`, `RYOKU_BACKEND`, `COLORTERM`, `WLR_RENDERER=pixman`, `WLR_RENDERER_ALLOW_SOFTWARE=1`, `XCURSOR_THEME=Bibata-Modern-Ice` (`:12-21`); waits up to 5 s for a KMS connector (`:77-84,196`); sizes the foot font from the panel (`:44-56,92-98`); runs `cage -m last -- foot ... -e ryoku-tui` with xkb env from `/tmp/ryoku-xkb` (`:155-183`), retries 3x then falls back to the VT with a `setfont` sized from `/sys/class/graphics/fb0/virtual_size` (`:64-71,105-131,198-220`); prints a recovery notice (`:136-148`).
 
 **Arch couplings:**
-- `getty@tty1.service.d/autologin.conf:3` hardcodes `/usr/bin/agetty`; Debian ships `/usr/sbin/agetty` only (util-linux filelist). Prior art: `debian13-stripped/build-rootfs.sh:550-553` uses `/sbin/agetty`.
+- `getty@tty1.service.d/autologin.conf:3` hardcodes `/usr/bin/agetty`; Debian ships `/usr/sbin/agetty` only (util-linux filelist).
 - `pacman-init.service`, `etc-pacman.d-gnupg.mount`, `etc/pacman.d/mirrorlist`: pacman-only.
 - `etc/locale.conf`, `etc/vconsole.conf`: Debian's canonical files are `/etc/default/locale` and `/etc/default/keyboard` (+ `/etc/default/console-setup`).
 - `ryoku-installer-session:107` font list `solar24x32`, `latarcyrheb-sun32`, `iso01-12x22`, `default8x16` are upstream-kbd font names. Debian: only `default8x16` exists (console-data); there is no 24x32 font; nearest are `Lat15-Terminus32x16` (16x32) and `Lat15-Terminus24x12` / `Lat15-Terminus22x11` (console-setup-linux).
@@ -440,10 +437,10 @@ files (`:536-551`).
 **As-is on Debian:** NO.
 
 **Port steps:**
-1. Resolve and download in a throwaway chroot of the TARGET suite (host apt state untouched, as `:86-89` does for pacman): `mmdebstrap --variant=apt --skip=cleanup ... "$work/chroot"`, then `chroot "$work/chroot" apt-get install --download-only -y -o Dir::Cache::archives=/cache <list>` for the main set. Prior art: `debian13-stripped/build-rootfs.sh:131-220` (software store) and `:412-463` (per-variant NVIDIA stores, each resolved separately because the variants conflict, matching `offline-repo.sh:173-191`).
-2. Index: `cd $DEST && apt-ftparchive packages . > Packages && gzip -9k Packages && apt-ftparchive release . > Release` (prior art `Debian13-Hyprland/scripts/10-cache.sh:323-334`). Target side: `deb [trusted=yes] file:/usr/share/ryoku/offline/repo ./` during install only (same trust model as `SigLevel = Never`, `:87-89`).
+1. Resolve and download in a throwaway chroot of the TARGET suite (host apt state untouched, as `:86-89` does for pacman): `mmdebstrap --variant=apt --skip=cleanup ... "$work/chroot"`, then `chroot "$work/chroot" apt-get install --download-only -y -o Dir::Cache::archives=/cache <list>` for the main set. and `:412-463` (per-variant NVIDIA stores, each resolved separately because the variants conflict, matching `offline-repo.sh:173-191`).
+2. Index: `cd $DEST && apt-ftparchive packages . > Packages && gzip -9k Packages && apt-ftparchive release . > Release`. Target side: `deb [trusted=yes] file:/usr/share/ryoku/offline/repo ./` during install only (same trust model as `SigLevel = Never`, `:87-89`).
 3. Integrity (`:373-391`): `dpkg-deb --info "$f" >/dev/null && dpkg-deb --contents "$f" >/dev/null` replaces `bsdtar -tf`.
-4. Closure verification (`:443-511`): `apt-get install -s --no-remove <pacstrap set>` against a sources.list naming only the offline repo (prior art `debian13-stripped/build-rootfs.sh:460-463`); file-conflict scan: `dpkg-deb -c` per deb, collect paths owned by >1 package, ignore pairs related by `Replaces:`.
+4. Closure verification (`:443-511`): `apt-get install -s --no-remove <pacstrap set>` against a sources.list naming only the offline repo; file-conflict scan: `dpkg-deb -c` per deb, collect paths owned by >1 package, ignore pairs related by `Replaces:`.
 5. AUR set (`:248-362`): replaced by debs built from the Ryoku packaging repo (packages agent); the legacy-NVIDIA note (`:193-209`) maps to Debian's `nvidia-tesla-535-*`/`nvidia-legacy-*` packages or NVIDIA's CUDA repo (hardware agent).
 6. Pruning (`:536-551`): only the newest version per package name is kept by `apt-ftparchive`'s output if the cache is pruned first (`apt-get autoclean`-style by name+version sort).
 
@@ -757,7 +754,7 @@ when the module built (`system/hardware/drivers/nvidia.sh:222-225`);
 autodetect's allowlist when nouveau is blacklisted (`modprobe --showconfig`) and
 `modprobe -S $KERNELVERSION -qn nvidia` succeeds, keeping ~100 MiB of GSP firmware
 out of every image (`ryoku-gpu-trim:1-44`); the doctor re-adds the hook on older
-boxes (`ryoku/cli/internal/doctor/reconcile_initramfs.go:24-120`).
+boxes (`ryoku/cli/internal/doctor/reconcile_initramfs.go:24-100`).
 
 **Arch couplings:** mkinitcpio HOOKS/`MODULES=()` syntax and `/etc/mkinitcpio.conf.d/` (`chroot.sh:161-162`, `nvidia.sh:223`, `bootloader.sh:308-311`); install-hook API `build()`, `_autodetect_cache`, `add_checked_modules` (`ryoku-gpu-trim:20-29`); `/usr/lib/initcpio/install/` path; `encrypt` hook + `cryptdevice=` cmdline (`bootloader.sh:259`).
 
@@ -987,7 +984,7 @@ Arch kernels ship `/usr/lib/modules/<ver>/pkgbase` and `/usr/lib/modules/<ver>/v
    make LLVM=1 LLVM_IAS=1 olddefconfig
    make LLVM=1 LLVM_IAS=1 -j"$(nproc)" bindeb-pkg KDEB_PKGVERSION=$v-$rel
    ```
-   Output: `linux-image-$v-cachyos_*.deb`, `linux-headers-$v-cachyos_*.deb`. Prior art for a CI-built custom kernel deb channel: `/home/me/src/hyprdebian-kernel` (`plan.sh`/`build.sh`, `docker run debian:trixie`, `KDEB_PKGVERSION=`, published as GitHub Releases), described in machine state.
+   Output: `linux-image-$v-cachyos_*.deb`, `linux-headers-$v-cachyos_*.deb`.
    DKMS with a clang-built kernel: the PKGBUILD applies `kernel-patches/7.2/misc/dkms-clang.patch`; on Debian, DKMS builds for this kernel need `clang`/`lld` installed and `LLVM=1` honored by dkms (dkms 3.2.2 reads the kernel's `CONFIG_CC_IS_CLANG`).
 3. Reference third-party Debian kernels (not CachyOS): XanMod (`deb.xanmod.org`, `linux-xanmod-x64v3`), Liquorix (`liquorix.net`, `linux-image-liquorix-amd64`); community CachyOS-for-deb builders found on GitHub (e.g. `fabianwimberger/linux-cachyos-deb`, `Deadly-Signal/cachy-kernel-debian`), none official.
 4. Repository wiring (`cachyos.sh`, `ryoku-pkg-cachyos`): replaced by the Ryoku apt repo carrying the kernel debs (no `[cachyos*]` repos exist for apt).
@@ -998,7 +995,7 @@ Arch kernels ship `/usr/lib/modules/<ver>/pkgbase` and `/usr/lib/modules/<ver>/v
 **Issues / risks:**
 - Doc vs code: `docs/kernels.md:53-58` says only `[cachyos-v3]` is added; `cachyos.sh:79` adds `[cachyos-core-v3]` and `[cachyos-extra-v3]` (the userland rebuilds) for the ISO variant. `cachyos.packages:1-4` vs `pacstrap.sh:71-75`/`base.packages:17-19` disagree on whether every install gets the layer.
 - `limine-mkinitcpio-hook`'s CachyOS fallback note (`README.md:46-48`) relies on both kernels being regenerated by name.
-- The CachyOS kernel built with clang ThinLTO takes ~1h45m per build on CI hardware (hyprdebian-kernel measurement in machine state, gcc build).
+- The CachyOS kernel built with clang ThinLTO takes ~1h45m per build on CI hardware.
 - Ubuntu 26.04's stock kernel (7.0) and trixie's (6.12) differ by two major series from Arch's 7.2; trixie 6.12 lacks sched_ext, so `scx-scheds` cannot run on the trixie stock kernel.
 
 **Questions for the human:**

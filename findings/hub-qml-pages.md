@@ -1,6 +1,6 @@
 ## Ryoku Hub (Settings) front end: Debian/Ubuntu port findings (ryoku @98a0368, read-only)
 
-Paths are relative to `/home/me/src/ryoku/ryoku/hub/quickshell/` unless they start with `ryoku/`, `system/`, `release/` or `tests/`; those are relative to `/home/me/src/ryoku`. Versions are listed as trixie / trixie-bpo / forky / sid / resolute, with "-" meaning the package is absent.
+Paths are relative to `/home/me/src/ryokudebian-installer/ryoku/hub/quickshell/` unless they start with `ryoku/`, `system/`, `release/` or `tests/`; those are relative to `/home/me/src/ryokudebian-installer`. Versions are listed as trixie / trixie-bpo / forky / sid / resolute, with "-" meaning the package is absent.
 
 ### 0. How the Hub is launched
 - **Desktop entry:** `Exec=ryoku-shell hub open` (`ryoku/hub/ryoku-hub.desktop:6`).
@@ -256,7 +256,7 @@ Also in the PKGBUILD font list (PKGBUILD:164-173): noto-fonts maps to fonts-noto
 12. **Not checked:** I did not run anything; no QML was linted or launched.
 
 ### Files referenced
-Paths relative to `/home/me/src/ryoku`.
+Paths relative to `/home/me/src/ryokudebian-installer`.
 
 - Hub front end:
   - `ryoku/hub/quickshell/` — Hub.qml, shell.qml, pages/*.qml, Singletons/{Updates,SysInfo,LiveStats,Settings}.qml, CompositorSwitchSheet.qml, schema/*.js, *.test.mjs

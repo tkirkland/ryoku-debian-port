@@ -40,7 +40,7 @@ D-01 (base), D-02 (bootloader), D-03 (fork vs dual), D-04 (Secure Boot), D-05
     `wayland wayland-protocols xkbcommon libinput lua hyprwayland-scanner hyprutils
     hyprlang hyprcursor hyprgraphics hyprland-protocols hyprwire aquamarine hyprland`,
     then hypridle, hyprpicker, hyprpolkitagent, xdg-desktop-portal-hyprland and
-    hyprsunset ([11 §Hyprland]; prior art `debian13-stripped/tools/build-debs.sh:24-40`).
+    hyprsunset ([11 §Hyprland]).
     Keep `GIT_COMMIT_HASH` in `version.h` (C-07).
   - Rebuild `quickshell` 0.3.2 against the new Qt.
 - **[F]:** nothing. Qt 6.11.2, quickshell 0.3.2, Hyprland 0.56.2 + `hyprland-dev`, Go
@@ -148,7 +148,7 @@ Per [08](08-installer.md):
 - **Backend:**
   - `pacstrap` becomes `mmdebstrap` (with an include list and the right components).
   - `arch-chroot` becomes a chroot with `--make-rslave` binds, efivars and a private
-    `/run`; prior art is `Debian13-Hyprland/lib/04-chroot-mounts.sh`. `policy-rc.d`
+    `/run`. `policy-rc.d`
     blocks service starts during install.
   - `genfstab` becomes a generated fstab; the ESP layout follows D-38.
   - reflector/mirrors become a Debian mirror probe.
