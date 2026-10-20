@@ -133,8 +133,8 @@ instead.
 meaning of D-02's "both"; proven in [13](13-limine-secure-boot-zfs-test.md)).
 
 - ❌ (a) None: refuse Secure Boot, as Ryoku does today.
-- ✅ (b) Debian shim + signed GRUB + MOK: works on Microsoft-keyed firmware.
-  Requires D-02 (b).
+- ✅ (b) Debian shim + signed GRUB + MOK: works on Microsoft-keyed firmware. The
+  chain on GRUB installs (D-02 (b)).
 - ❌ (c) Limine + own keys: `sbctl` built from source, firmware Setup Mode per
   machine, and DKMS modules need a signing story.
 - ✅ (d) Limine behind shim + MOK: proven in a VM on 2026-10-19 (13); real
@@ -213,6 +213,21 @@ kernels lack Debian's "lock down under Secure Boot" patch, so lockdown needs
 `lockdown=integrity` in the signed UKI cmdline or that patch carried in the
 build; and a clang-built CachyOS kernel needs NVIDIA's DKMS modules built with
 `LLVM=1` (unverified).
+
+### ✅ D-45 Root filesystem
+
+**Decided 2026-10-20: both, chosen at install time.** The installer offers btrfs
+or ZFS for the root filesystem, like the bootloader (D-02) and kernel (D-06)
+choices. Snapshots and rollback (D-10) exist on either: snapper on btrfs, ZFS's
+own snapshots on ZFS. Every kernel variant has ZFS builtin (D-06). Entries
+elsewhere that assume btrfs (D-02 (a), D-18, D-19, D-38) describe the btrfs path
+and need a ZFS counterpart.
+
+- ❌ btrfs only: matches Arch Ryoku exactly, least to change.
+- ❌ ZFS only: matches the user's Debian projects and the kernels, proven in 13,
+  but drops Ryoku's btrfs/snapper path.
+- ✅ Both, chosen at install time (user: "if you're not going to make ZFS
+  available, why did I make a custom kernel with it built in?").
 
 ---
 
