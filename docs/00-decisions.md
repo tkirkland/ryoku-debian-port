@@ -11,7 +11,7 @@ component.
 
 **Status marks:** ✅ decided (a **Decided** line follows the heading), ⬜ open.
 Inside a decided entry, ✅ marks the option taken and ❌ one rejected. Tier 1: 7
-of 7 decided (D-01a/b/c settled by D-01; D-45 added 2026-10-20). Tier 2: 6
+of 7 decided (D-01a/b/c settled by D-01; D-02a added 2026-10-20). Tier 2: 6
 of 11. Tier 3: 0 of 27.
 
 ---
@@ -112,6 +112,21 @@ key. So (a) no longer loses Secure Boot, and D-04 (d) is proven in a VM.
 or Limine, both behind shim + MOK. Cost: the boot guard, the restore guide and
 the boot doctor reconcilers exist once per bootloader, and the snapshot-entry
 tool writes both menu formats.
+
+### ✅ D-02a Root filesystem
+
+**Decided 2026-10-20: both, chosen at install time.** The installer offers btrfs
+or ZFS for the root filesystem, like the bootloader (D-02) and kernel (D-06)
+choices. Snapshots and rollback (D-10) exist on either: snapper on btrfs, ZFS's
+own snapshots on ZFS. Every kernel variant has ZFS builtin (D-06). Entries
+elsewhere that assume btrfs (D-02 (a), D-18, D-19, D-38) describe the btrfs path
+and need a ZFS counterpart.
+
+- ❌ btrfs only: matches Arch Ryoku exactly, least to change.
+- ❌ ZFS only: matches the user's Debian projects and the kernels, proven in 13,
+  but drops Ryoku's btrfs/snapper path.
+- ✅ Both, chosen at install time (user: "if you're not going to make ZFS
+  available, why did I make a custom kernel with it built in?").
 
 ### ✅ D-03 One codebase or a fork
 
@@ -214,21 +229,6 @@ kernels lack Debian's "lock down under Secure Boot" patch, so lockdown needs
 `lockdown=integrity` in the signed UKI cmdline or that patch carried in the
 build; and a clang-built CachyOS kernel needs NVIDIA's DKMS modules built with
 `LLVM=1` (unverified).
-
-### ✅ D-45 Root filesystem
-
-**Decided 2026-10-20: both, chosen at install time.** The installer offers btrfs
-or ZFS for the root filesystem, like the bootloader (D-02) and kernel (D-06)
-choices. Snapshots and rollback (D-10) exist on either: snapper on btrfs, ZFS's
-own snapshots on ZFS. Every kernel variant has ZFS builtin (D-06). Entries
-elsewhere that assume btrfs (D-02 (a), D-18, D-19, D-38) describe the btrfs path
-and need a ZFS counterpart.
-
-- ❌ btrfs only: matches Arch Ryoku exactly, least to change.
-- ❌ ZFS only: matches the user's Debian projects and the kernels, proven in 13,
-  but drops Ryoku's btrfs/snapper path.
-- ✅ Both, chosen at install time (user: "if you're not going to make ZFS
-  available, why did I make a custom kernel with it built in?").
 
 ---
 
