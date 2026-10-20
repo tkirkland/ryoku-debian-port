@@ -19,14 +19,9 @@ of 6 decided (D-01a/b/c settled by D-01). Tier 2: 0 of 11. Tier 3: 0 of 27.
 
 ### ✅ D-01 Base suite
 
-**Decided 2026-10-19: trixie, on the Debian13-Hyprland framework** (the build
-running on the reference machine). Goal: behaviour identical to Arch Ryoku, no
-local patching. Already solved there and reused: the Hyprland stack from git (=
-D-01c T2), GCC 16 via the sid toolchain pin (= D-01a (a)), NVIDIA from the CUDA
-repo (= D-05 (b)), Secure Boot via Debian's signed shim + signed GRUB + signed
-kernel with a per-install MOK key signing every DKMS module (= D-04 (b)),
-installer and ISO pipeline. Still to add: Qt 6.11 + quickshell (D-01b (a)),
-Go >= 1.26.4, and the snapshot/rollback chain (D-02).
+**Decided 2026-10-19: trixie (+bpo), on the Debian13-Hyprland framework** (the
+build running on the reference machine). Goal: behaviour identical to Arch
+Ryoku, no local patching.
 
 Options: Debian 13 trixie (+ backports), Debian forky (testing), Debian sid,
 Ubuntu 26.04 (resolute). Facts: [01-base-comparison.md](01-base-comparison.md).
@@ -42,23 +37,54 @@ Ubuntu 26.04 (resolute). Facts: [01-base-comparison.md](01-base-comparison.md).
   the launcher fallback, D-01b), the Hyprland 0.56 stack and quickshell.
   Browsers are snaps (D-36) and live-build is unusable (D-40). 53 packages.
 
-Sub-decisions that exist only for some bases:
+What the framework already provides, so these are inherited rather than rebuilt:
+the GCC 16 build root (D-01a), the Hyprland stack from git (D-01c), NVIDIA from
+the CUDA repo (D-05), Secure Boot via Debian's signed shim + signed GRUB +
+signed kernel with a per-install MOK key signing every DKMS module (D-04), the
+installer and the ISO pipeline. Still to add: Qt 6.11 + quickshell (D-01b),
+Go >= 1.26.4, and the snapshot/rollback chain (D-02).
 
-- ✅ **D-01a (trixie) GCC 16 route for Hyprland ≥ 0.56:** (a) pin sid's `g++-16`
-  into the build root; installed systems then run sid's `libc6`/`libstdc++6`.
-  (b) Backport `gcc-16` to trixie: a clean graph, but a multi-hour toolchain
-  build redone for each GCC point release. (c) Try gcc-14 with Debian's patch
-  set first, falling back to (a) or (b). [11 §Hyprland]
-- ✅ **D-01b (trixie, resolute) Qt route:** (a) backport the Qt 6.11.2 source
-  packages from forky, then rebuild every private-ABI consumer (quickshell,
-  Hyprland plugins) on each Qt change. (b) Resolute only: stay on Qt 6.10 and
-  accept that the default hero launcher falls back to okshell, or patch
-  `hero/LauncherSurface.qml:466-469`. Either way it is not pixel-identical.
-  [09a]
-- ✅ **D-01c (trixie, resolute) Hyprland stack source:** T1 rebuild Debian's
-  forky sources (Debian package names, `hyprland-abi-*` Provides, the least code
-  to own), or T2 a from-git builder (Arch-identical paths; owns every library,
-  wayland/xkbcommon/libinput included). [11]
+### ✅ D-01a GCC 16 route for Hyprland ≥ 0.56 (trixie)
+
+**Decided 2026-10-19: (a), inherited from the framework.**
+
+- ✅ (a) Pin sid's `g++-16` into the build root. Installed systems carry sid's
+  `libstdc++6` and `libgcc-s1` only; `libc6` stays trixie's. Verified 2026-10-20
+  on the reference machine (libc6 2.41-12+deb13u4 with libstdc++6 and libgcc-s1
+  16.1.0-2) and against sid's dependency floors (libstdc++6 16.2.0-3 needs
+  `libc6 >= 2.38`). The built Hyprland needs GLIBCXX_3.4.34, which trixie's
+  gcc-14 libstdc++6 (3.4.33) lacks, and GLIBC_2.38, which trixie's glibc covers.
+  Those two libraries sit outside trixie's security updates, and a future sid
+  libstdc++6 may raise its libc6 floor past 2.41, so the build must keep using
+  the cached GCC 16 debs rather than sid of the day.
+- ❌ (b) Backport `gcc-16` to trixie: a clean graph, but a multi-hour toolchain
+  build redone for each GCC point release.
+- ❌ (c) Try gcc-14 with Debian's patch set first, falling back to (a) or (b).
+
+[11 §Hyprland]
+
+### ✅ D-01b Qt route (trixie)
+
+**Decided 2026-10-19: (a), still to build.**
+
+- ✅ (a) Backport the Qt 6.11.2 source packages from forky, then rebuild every
+  private-ABI consumer (quickshell, Hyprland plugins) on each Qt change.
+- ❌ (b) Resolute only: stay on Qt 6.10 and accept that the default hero
+  launcher falls back to okshell, or patch `hero/LauncherSurface.qml:466-469`.
+  Not pixel-identical either way, and moot since resolute was rejected.
+
+[09a]
+
+### ✅ D-01c Hyprland stack source (trixie)
+
+**Decided 2026-10-19: T2, inherited from the framework.**
+
+- ❌ T1 Rebuild Debian's forky sources: Debian package names, `hyprland-abi-*`
+  Provides, the least code to own.
+- ✅ T2 A from-git builder: Arch-identical paths; owns every library,
+  wayland/xkbcommon/libinput included.
+
+[11]
 
 ### ✅ D-02 Bootloader and rollback chain
 
