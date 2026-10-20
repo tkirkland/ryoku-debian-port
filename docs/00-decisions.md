@@ -359,12 +359,16 @@ release time"). No local plugin rebuilds on user machines.
 
 ### ✅ D-14 Compiler on user machines
 
-**Decided 2026-10-20: stock trixie compiler (gcc-14) by default; g++-16
-available as an opt-in from the port's repo.** The repo carries the exact
-sid-built gcc-16 debs the build root used (the frozen set, never sid of the
-day), so `apt install g++-16` works offline and matches the stack's libstdc++6.
-`hyprland-dev` lists g++-16 as Suggests, so the nerd who grabs the source finds
-the compiler with one command and nobody else sees it. No sid apt source on user
+**Decided 2026-10-20: gcc-16 installed by default, beside gcc-14.** The image
+carries build-essential as Debian ships it (gcc-14 stays the default
+`gcc`/`g++`; it is already there for the NVIDIA DKMS modules) plus the exact
+sid-built gcc-16 and g++-16 debs the build root used (the frozen set, never sid
+of the day, so they match the stack's libstdc++6). Debian's versioned GCC
+packaging lets the two coexist; gcc-16 reuses build-essential's binutils, make
+and libc6-dev. With the compiler present, `hyprpm` and hand builds against
+Hyprland's C++26 headers work out of the box. Hyprland plugins beyond Ryoku's
+five are published in the port's repo as pinned debs (D-13), not baked into the
+image; which ones is a package-set question for later. No sid apt source on user
 machines. Not a backport (that was D-01a (b), rejected).
 
 The question as raised:
