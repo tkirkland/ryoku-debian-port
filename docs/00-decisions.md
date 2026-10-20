@@ -234,11 +234,14 @@ Q2]
 - GitHub Pages (1 GB site, 100 MB per file).
 - GitHub Releases flat repos (natural per-tag freezing, flat layout only).
   Already used by the two kernel repos.
-- Own server. The user has a VPS available (2026-10-20): rsync the
-  apt-ftparchive output, nginx serves it, no size caps, kernels and packages
-  could share one repository. Uptime, patching, backups and TLS are ours.
-- Far future: the user's self-hosted GitLab has a built-in Debian package
-  registry, which would replace both the repo tool and the hosting.
+- Own server. The user's VPS (2026-10-20), which already runs their self-hosted
+  GitLab. Two ways to use the same box:
+  - A plain directory: rsync the apt-ftparchive output, nginx serves it. No size
+    caps, kernels and packages could share one repository.
+  - GitLab's built-in Debian package registry, which would also take over the
+    index-and-sign job (folds D-08 into it). Verify first that the registry is
+    enabled and stable on that GitLab version; it sat behind a feature flag for
+    a long time. Either way uptime, patching, backups and TLS are ours.
 
 Deferred: decide at first publish. Nothing in the build phase depends on it.
 
