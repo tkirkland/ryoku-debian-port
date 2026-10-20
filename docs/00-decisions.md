@@ -385,14 +385,24 @@ Fully vendored offline builds for Go, cargo, npm/Electron and Gradle/GraalVM
 tooling), or CI builds with network access (simpler, but not reproducible in
 sbuild). [04 Q9]
 
-### ⬜ D-16 `/etc` files shipped by packages
+### ✅ D-16 `/etc` files shipped by packages
+
+**Decided 2026-10-20: keep all four at the Arch paths (option 1).** systemd and
+modules-load read /etc and /usr/lib alike, so nothing functional differs; the
+Debian convention (package defaults under /usr/lib) only changes dpkg's conffile
+handling: a prompt on upgrade if the user edited a file, and the file left
+behind on remove until purge. Matching Ryoku wins (user: "if it ain't broke,
+don't fix it"). The files: `/etc/ryoku-release`,
+`/etc/systemd/logind.conf.d/10-ryoku-lid.conf`,
+`/etc/modules-load.d/ryoku-i2c.conf`,
+`/etc/modules-load.d/99-ryoku-uinput.conf`.
 
 `/etc/ryoku-release`, the logind lid drop-in, two modules-load files:
 
-- Keep them as conffiles at the Arch paths. Removing the package leaves them
+- ✅ Keep them as conffiles at the Arch paths. Removing the package leaves them
   behind, and seeded files cause conffile prompts.
-- Move them to `/usr/lib/...` vendor paths. That needs code changes wherever the
-  CLI/doctor names the `/etc` paths.
+- ❌ Move them to `/usr/lib/...` vendor paths. That needs code changes wherever
+  the CLI/doctor names the `/etc` paths.
 
 [04 Q11]
 
