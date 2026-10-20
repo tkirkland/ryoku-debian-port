@@ -11,7 +11,7 @@ component.
 
 **Status marks:** ✅ decided (a **Decided** line follows the heading), ⬜ open.
 Inside a decided entry, ✅ marks the option taken and ❌ one rejected. Tier 1: 6
-of 6 decided (D-01a/b/c settled by D-01). Tier 2: 3 of 11. Tier 3: 0 of 27.
+of 6 decided (D-01a/b/c settled by D-01). Tier 2: 4 of 11. Tier 3: 0 of 27.
 
 ---
 
@@ -264,7 +264,16 @@ GitHub Releases until there is a reason to move them.
 
 [04 Q3]
 
-### ⬜ D-10 Channel layout and downgrades
+### ✅ D-10 Channel layout and downgrades
+
+**Decided 2026-10-20: one suite, `stable`, no channels; no apt downgrade path.**
+Testing happens on the user's own machines before a release is tagged, not on a
+public channel. "Go back" means booting the previous filesystem snapshot (ZFS or
+btrfs, whichever the install chose) and the package set returns with it; no
+`--allow-downgrades`, no 1001 pin. `ryoku track` and `ryoku rollback --to <tag>`
+leave the fork (user: "ZFS and btrfs are there as your oh-shit button").
+
+Options were:
 
 - **Layout:**
   - D1: per-channel repo roots (the CLI switches `URIs:`).
