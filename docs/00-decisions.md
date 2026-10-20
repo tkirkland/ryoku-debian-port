@@ -11,7 +11,7 @@ component.
 
 **Status marks:** ✅ decided (a **Decided** line follows the heading), ⬜ open.
 Inside a decided entry, ✅ marks the option taken and ❌ one rejected. Tier 1: 6
-of 6 decided (D-01a/b/c settled by D-01). Tier 2: 0 of 11. Tier 3: 0 of 27.
+of 6 decided (D-01a/b/c settled by D-01). Tier 2: 1 of 11. Tier 3: 0 of 27.
 
 ---
 
@@ -208,14 +208,18 @@ build; and a clang-built CachyOS kernel needs NVIDIA's DKMS modules built with
 
 ## Tier 2: infrastructure
 
-### ⬜ D-07 Source-package shape
+### ✅ D-07 Source-package shape
 
-- **A:** one `3.0 (native)` source for the monorepo. Exact pins via
+**Decided 2026-10-20: A, one native source for the monorepo.** Automated
+upstream-version PRs for the stack are noted in [future.md](future.md), not
+part of this phase.
+
+- ✅ **A:** one `3.0 (native)` source for the monorepo. Exact pins via
   `${binary:Version}`; one source of about 300 MB per build (239 MB of it
   `ryoku/assets`). Plugins, oh-my-zsh and keysounds stay separate sources.
-- **B:** one source per PKGBUILD (mirrors Arch). The 300 MB tree is duplicated
-  per source, pins go through a substvar, and all sources must publish together.
-  [04 §1.2]
+- ❌ **B:** one source per PKGBUILD (mirrors Arch). The 300 MB tree is
+  duplicated per source, pins go through a substvar, and all sources must
+  publish together. [04 §1.2]
 
 ### ⬜ D-08 Repo tool
 
