@@ -262,11 +262,11 @@ Q2]
 
 ### ✅ D-09 Hosting
 
-- S3-compatible bucket (today's R2 model).
-- GitHub Pages (1 GB site, 100 MB per file).
+- ❌ S3-compatible bucket (today's R2 model).
+- ❌ GitHub Pages (1 GB site, 100 MB per file).
 - GitHub Releases flat repos (natural per-tag freezing, flat layout only).
   Already used by the two kernel repos.
-- Own server. The user's VPS (2026-10-20), which already runs their self-hosted
+- ✅ Own server. The user's VPS (2026-10-20), which already runs their self-hosted
   GitLab. A plain directory: rsync the apt-ftparchive output, nginx serves it.
   No size caps, kernels and packages could share one repository. Uptime,
   patching, backups and TLS are ours.
