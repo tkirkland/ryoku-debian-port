@@ -93,7 +93,7 @@ Go >= 1.26.4, and the snapshot/rollback chain (D-02).
   9.6.1 native builds whose hooks are pacman/mkinitcpio-only, so they need a
   Debian hook layer (kernel `postinst.d`/`postrm.d`, initramfs `post-update.d`,
   dpkg triggers, an apt hook). The rollback UX stays identical. Secure Boot
-  through Debian's shim chain is lost unless D-04 (c) or (d) is chosen.
+  through Debian's shim chain holds with D-04 (d), proven in 13.
 - ✅ **(b) GRUB + grub-btrfs:** grub-btrfs is one shell project to package.
   Secure Boot works with `shim-signed` + `grub-efi-amd64-signed`. A restore
   helper must be written or the subvolume layout changed. The boot guard,
