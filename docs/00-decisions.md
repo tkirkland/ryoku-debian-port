@@ -136,8 +136,8 @@ Limine by D-02 (= (d), proven in [13](13-limine-secure-boot-zfs-test.md)).**
   Requires D-02 (b).
 - ❌ (c) Limine + own keys: `sbctl` built from source, firmware Setup Mode per
   machine, and DKMS modules need a signing story.
-- ✅ (d) Limine behind shim + MOK: an unverified chain that needs hardware
-  testing.
+- ✅ (d) Limine behind shim + MOK (Claude, not decided: marked from D-02's
+  decision and the test in 13): an unverified chain that needs hardware testing.
 
 On Debian/Ubuntu kernels, Secure Boot turns on lockdown. Lockdown refuses
 unsigned DKMS modules (NVIDIA) and disables hibernation (`resume=`). [06 §Secure
@@ -148,11 +148,12 @@ Boot, 08 Q5]
 **Decided 2026-10-19 with D-01: (b) the NVIDIA CUDA repo, as Debian13-Hyprland
 does.**
 
-- ✅ (fallback only) **(a) Debian archive 550.163:** signed by Debian and
-  security-supported. No RTX 50, no explicit sync, and the open module is
-  missing in forky. Modules are renamed `nvidia-current`/`nvidia-current-open`,
-  so Ryoku's `modinfo nvidia` probes (in `nvidia.sh`, the guard and
-  `reconcile_hardware.go`) must accept those names.
+- **(a) Debian archive 550.163** (Claude, not decided: the CUDA repo has no
+  driver for Maxwell/Pascal/Volta, so those cards would fall here)**:** signed
+  by Debian and security-supported. No RTX 50, no explicit sync, and the open
+  module is missing in forky. Modules are renamed
+  `nvidia-current`/`nvidia-current-open`, so Ryoku's `modinfo nvidia` probes (in
+  `nvidia.sh`, the guard and `reconcile_hardware.go`) must accept those names.
 - ✅ **(b) NVIDIA CUDA repo for debian13 (590–615, `nvidia-open`):**
   Arch-equivalent versions and module names. A third-party repo whose `dkms`
   overrides Debian's. No Maxwell/Pascal/Volta branch, so those cards fall back
@@ -231,12 +232,12 @@ of this phase.
 
 ### ✅ D-08 Repo tool
 
-**Decided 2026-10-20: the Debian package registry of the user's self-hosted
-GitLab** (same VPS as D-09). Condition: before the first publish, verify the
-registry is enabled and stable on that GitLab version; it sat behind a feature
-flag for a long time. Fallback if it is not: apt-ftparchive into a plain
-directory on the same VPS, which is stateless and loses nothing when swapped out
-later.
+**Decided 2026-10-20: apt-ftparchive.** Stateless: the publish job builds, runs
+apt-ftparchive over the output, signs the index, uploads to the host (D-09).
+GitLab's Debian package registry was considered and ruled out on 2026-10-20:
+GitLab's own docs list it as an Experiment, off by default, "not ready for
+production use", with known security vulnerabilities. Watch item in
+[future.md](future.md).
 
 Options were apt-ftparchive (stateless, closest to `build-repo.sh`, no by-hash),
 reprepro (persistent db, one version per suite), or aptly (persistent db, native
@@ -253,14 +254,13 @@ Q2]
   GitLab. Two ways to use the same box:
   - A plain directory: rsync the apt-ftparchive output, nginx serves it. No size
     caps, kernels and packages could share one repository.
-  - GitLab's built-in Debian package registry, which would also take over the
-    index-and-sign job (folds D-08 into it). Verify first that the registry is
-    enabled and stable on that GitLab version; it sat behind a feature flag for
-    a long time. Either way uptime, patching, backups and TLS are ours.
+  - GitLab's built-in Debian package registry: ruled out for now, see D-08.
 
-**Decided 2026-10-20: the user's VPS.** GitLab's Debian package registry on it
-(D-08), else a plain directory behind nginx on the same box. Kernels stay on
-GitHub Releases until there is a reason to move them.
+  Either way uptime, patching, backups and TLS are ours.
+
+**Decided 2026-10-20: the user's VPS**, a plain directory behind nginx holding
+the apt-ftparchive output (D-08). Kernels stay on GitHub Releases until there is
+a reason to move them.
 
 [04 Q3]
 
@@ -298,9 +298,9 @@ Options were:
 no expiry) is the trust anchor shipped in the keyring package; it lives on a
 thumb drive held by the user plus an encrypted off-site copy, with a
 pre-generated revocation certificate beside it. A signing subkey (two-year
-expiry) is held by GitLab (D-08) and signs every published index; a leaked
-subkey is revoked and reissued without replacing the trust anchor on installed
-machines. No debsigs on the .deb files; apt ignores them.
+expiry) is held by the CI publish job (D-08) and signs every published index; a
+leaked subkey is revoked and reissued without replacing the trust anchor on
+installed machines. No debsigs on the .deb files; apt ignores them.
 
 The open points were:
 
