@@ -10,8 +10,8 @@ infrastructure phase. **Tier 3** decisions can wait until work reaches that
 component.
 
 **Status marks:** ✅ decided (a **Decided** line follows the heading), ⬜ open.
-Tier 1: 6 of 6 decided (D-01a/b/c settled by D-01). Tier 2: 0 of 11. Tier 3: 0
-of 27.
+Inside a decided entry, ✅ marks the option taken and ❌ one rejected. Tier 1: 6
+of 6 decided (D-01a/b/c settled by D-01). Tier 2: 0 of 11. Tier 3: 0 of 27.
 
 ---
 
@@ -31,16 +31,16 @@ Go >= 1.26.4, and the snapshot/rollback chain (D-02).
 Options: Debian 13 trixie (+ backports), Debian forky (testing), Debian sid,
 Ubuntu 26.04 (resolute). Facts: [01-base-comparison.md](01-base-comparison.md).
 
-- **forky/sid:** Qt 6.11.2, Quickshell 0.3.2 and Hyprland 0.56.2 are all in the
-  archive, so there are no rebuild stacks. 50/48 packages to build. Rolling,
+- ❌ **forky/sid:** Qt 6.11.2, Quickshell 0.3.2 and Hyprland 0.56.2 are all in
+  the archive, so there are no rebuild stacks. 50/48 packages to build. Rolling,
   like Arch. NVIDIA archive tops out at 550 (see D-05).
-- **trixie (+bpo):** frozen and security-supported. Needs a self-maintained Qt
-  6.11 stack (about 9 source packages, every Qt security fix redone by hand), a
-  Hyprland 0.56 stack plus a GCC 16 route (D-01a) and quickshell. 64 packages
+- ✅ **trixie (+bpo):** frozen and security-supported. Needs a self-maintained
+  Qt 6.11 stack (about 9 source packages, every Qt security fix redone by hand),
+  a Hyprland 0.56 stack plus a GCC 16 route (D-01a) and quickshell. 64 packages
   with bpo.
-- **resolute:** frozen LTS. Current NVIDIA (580/595/615). Needs Qt 6.11 (or the
-  launcher fallback, D-01b), the Hyprland 0.56 stack and quickshell. Browsers
-  are snaps (D-36) and live-build is unusable (D-40). 53 packages.
+- ❌ **resolute:** frozen LTS. Current NVIDIA (580/595/615). Needs Qt 6.11 (or
+  the launcher fallback, D-01b), the Hyprland 0.56 stack and quickshell.
+  Browsers are snaps (D-36) and live-build is unusable (D-40). 53 packages.
 
 Sub-decisions that exist only for some bases:
 
@@ -62,17 +62,17 @@ Sub-decisions that exist only for some bases:
 
 ### ✅ D-02 Bootloader and rollback chain
 
-- **(a) Limine, as on Arch:** package `limine` (an easy build) plus
+- ✅ **(a) Limine, as on Arch:** package `limine` (an easy build) plus
   `limine-entry-tool` and `limine-snapper-sync`. Both are GraalVM 25 + Gradle
   9.6.1 native builds whose hooks are pacman/mkinitcpio-only, so they need a
   Debian hook layer (kernel `postinst.d`/`postrm.d`, initramfs `post-update.d`,
   dpkg triggers, an apt hook). The rollback UX stays identical. Secure Boot
   through Debian's shim chain is lost unless D-04 (c) or (d) is chosen.
-- **(b) GRUB + grub-btrfs:** grub-btrfs is one shell project to package. Secure
-  Boot works with `shim-signed` + `grub-efi-amd64-signed`. A restore helper must
-  be written or the subvolume layout changed. The boot guard, `restoreGuide` and
-  five doctor reconcilers are rewritten, and the Limine branding becomes a GRUB
-  theme. [05 §6, 06 §Limine]
+- ✅ **(b) GRUB + grub-btrfs:** grub-btrfs is one shell project to package.
+  Secure Boot works with `shim-signed` + `grub-efi-amd64-signed`. A restore
+  helper must be written or the subvolume layout changed. The boot guard,
+  `restoreGuide` and five doctor reconcilers are rewritten, and the Limine
+  branding becomes a GRUB theme. [05 §6, 06 §Limine]
 
 **Tested 2026-10-19 ([13](13-limine-secure-boot-zfs-test.md)):** stock Limine
 12.9.4 runs behind Debian's shim + MOK once a `.sbat` section is added at
@@ -88,11 +88,11 @@ tool writes both menu formats.
 
 ### ✅ D-03 One codebase or a fork
 
-- **(a) Fork:** replace pacman with apt in place. The smallest diff, but it
+- ✅ **(a) Fork:** replace pacman with apt in place. The smallest diff, but it
   diverges from upstream Ryoku on every file that touches packages.
-- **(b) Dual:** `internal/sys/pkg_{pacman,apt}.go` behind a `debian` build tag,
-  plus tagged twins (or skips) for the 28 Arch-only and 19 partly-Arch doctor
-  reconcilers. A smaller merge surface against upstream. [05 Q-1]
+- ❌ **(b) Dual:** `internal/sys/pkg_{pacman,apt}.go` behind a `debian` build
+  tag, plus tagged twins (or skips) for the 28 Arch-only and 19 partly-Arch
+  doctor reconcilers. A smaller merge surface against upstream. [05 Q-1]
 
 **Decided 2026-10-19: (a) fork, used as the port's own original.** Debian
 changes are made in place. A scheduled workflow fetches upstream
@@ -105,12 +105,13 @@ instead.
 **Decided 2026-10-19 with D-01: (b) Debian shim + signed GRUB + MOK, extended to
 Limine by D-02 (= (d), proven in [13](13-limine-secure-boot-zfs-test.md)).**
 
-- (a) None: refuse Secure Boot, as Ryoku does today.
-- (b) Debian shim + signed GRUB + MOK: works on Microsoft-keyed firmware.
+- ❌ (a) None: refuse Secure Boot, as Ryoku does today.
+- ✅ (b) Debian shim + signed GRUB + MOK: works on Microsoft-keyed firmware.
   Requires D-02 (b).
-- (c) Limine + own keys: `sbctl` built from source, firmware Setup Mode per
+- ❌ (c) Limine + own keys: `sbctl` built from source, firmware Setup Mode per
   machine, and DKMS modules need a signing story.
-- (d) Limine behind shim + MOK: an unverified chain that needs hardware testing.
+- ✅ (d) Limine behind shim + MOK: an unverified chain that needs hardware
+  testing.
 
 On Debian/Ubuntu kernels, Secure Boot turns on lockdown. Lockdown refuses
 unsigned DKMS modules (NVIDIA) and disables hibernation (`resume=`). [06 §Secure
@@ -121,19 +122,19 @@ Boot, 08 Q5]
 **Decided 2026-10-19 with D-01: (b) the NVIDIA CUDA repo, as Debian13-Hyprland
 does.**
 
-- **(a) Debian archive 550.163:** signed by Debian and security-supported. No
-  RTX 50, no explicit sync, and the open module is missing in forky. Modules are
-  renamed `nvidia-current`/`nvidia-current-open`, so Ryoku's `modinfo nvidia`
-  probes (in `nvidia.sh`, the guard and `reconcile_hardware.go`) must accept
-  those names.
-- **(b) NVIDIA CUDA repo for debian13 (590–615, `nvidia-open`):**
+- ✅ (fallback only) **(a) Debian archive 550.163:** signed by Debian and
+  security-supported. No RTX 50, no explicit sync, and the open module is
+  missing in forky. Modules are renamed `nvidia-current`/`nvidia-current-open`,
+  so Ryoku's `modinfo nvidia` probes (in `nvidia.sh`, the guard and
+  `reconcile_hardware.go`) must accept those names.
+- ✅ **(b) NVIDIA CUDA repo for debian13 (590–615, `nvidia-open`):**
   Arch-equivalent versions and module names. A third-party repo whose `dkms`
   overrides Debian's. No Maxwell/Pascal/Volta branch, so those cards fall back
   to (a), which means two origins and pinning.
-- **(c) Ubuntu `ubuntu-drivers`:** resolute only; 580/595/615 with prebuilt
+- ❌ **(c) Ubuntu `ubuntu-drivers`:** resolute only; 580/595/615 with prebuilt
   signed modules.
-- **(d) Port-built debs from NVIDIA's `.run`:** full control; the port carries
-  the driver packaging.
+- ❌ **(d) Port-built debs from NVIDIA's `.run`:** full control; the port
+  carries the driver packaging.
 
 Kepler has no driver on trixie, forky or resolute. [07 §NVIDIA, 08 Q4]
 
@@ -143,14 +144,14 @@ Kepler has no driver on trixie, forky or resolute. [07 §NVIDIA, 08 Q4]
   trixie-bpo/forky 7.2 and Ubuntu 7.0 have them), or the trixie-backports kernel
   by default on trixie.
 - **CachyOS:**
-  - (a) Drop the CachyOS ISO variant and the Hub opt-in.
-  - (b) Opt-in only, as in `docs/kernels.md`: a Ryoku-built CachyOS kernel deb
-    (from the pre-patched tarball + BORE patch + config, `make bindeb-pkg`,
+  - ❌ (a) Drop the CachyOS ISO variant and the Hub opt-in.
+  - ✅ (b) Opt-in only, as in `docs/kernels.md`: a Ryoku-built CachyOS kernel
+    deb (from the pre-patched tarball + BORE patch + config, `make bindeb-pkg`,
     clang ThinLTO).
-  - (c) Full variant: that kernel plus `cachyos-settings`, `ananicy-cpp` +
+  - ❌ (c) Full variant: that kernel plus `cachyos-settings`, `ananicy-cpp` +
     rules, `scx-scheds` and the `proton-cachyos` tarball, all self-built.
-  - (d) A variant on Debian's own 7.2 kernel (sched_ext present, no BORE) plus
-    self-built scx/ananicy/settings.
+  - ❌ (d) A variant on Debian's own 7.2 kernel (sched_ext present, no BORE)
+    plus self-built scx/ananicy/settings.
 
   A clang-built kernel needs DKMS modules (NVIDIA) built with `LLVM=1`; whether
   Debian's dkms does that automatically was not verified. A self-built kernel
