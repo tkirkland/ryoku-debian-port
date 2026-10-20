@@ -185,7 +185,11 @@ Kepler has no driver on trixie, forky or resolute. [07 §NVIDIA, 08 Q4]
 
 **Decided 2026-10-20: CachyOS layer = (c), the full variant.** Picking the
 CachyOS kernel at install time brings `cachyos-settings`, `ananicy-cpp` + rules,
-`scx-scheds` and `proton-cachyos` with it, all port-built, as on Arch.
+`scx-scheds` and `proton-cachyos` with it, all port-built, as on Arch. The layer
+is bound to the CachyOS kernel: it installs with that kernel and only with it,
+and a later kernel switch carries it along. No separate Hub toggle on the Debian
+kernels (user, 2026-10-20: "keep Cachy together with Cachy and Debian together
+with Debian").
 
 **Decided 2026-10-19: kernel chosen at install time.**
 
