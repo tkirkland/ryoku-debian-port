@@ -130,7 +130,7 @@ instead.
 
 **Decided: (b) and (d), shim + MOK under either bootloader.** (b) for GRUB
 (2026-10-19 with D-01), (d) for Limine (confirmed by the user 2026-10-20 as the
-meaning of D-02's "both"; proven in [13](13-limine-secure-boot-zfs-test.md)).**
+meaning of D-02's "both"; proven in [13](13-limine-secure-boot-zfs-test.md)).
 
 - ❌ (a) None: refuse Secure Boot, as Ryoku does today.
 - ✅ (b) Debian shim + signed GRUB + MOK: works on Microsoft-keyed firmware.
