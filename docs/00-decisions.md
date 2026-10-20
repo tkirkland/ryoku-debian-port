@@ -357,7 +357,17 @@ release time"). No local plugin rebuilds on user machines.
 
 [11 §plugins]
 
-### ⬜ D-14 Compiler on user machines
+### ✅ D-14 Compiler on user machines
+
+**Decided 2026-10-20: stock trixie compiler (gcc-14) by default; g++-16
+available as an opt-in from the port's repo.** The repo carries the exact
+sid-built gcc-16 debs the build root used (the frozen set, never sid of the
+day), so `apt install g++-16` works offline and matches the stack's libstdc++6.
+`hyprland-dev` lists g++-16 as Suggests, so the nerd who grabs the source finds
+the compiler with one command and nobody else sees it. No sid apt source on user
+machines. Not a backport (that was D-01a (b), rejected).
+
+The question as raised:
 
 The runtime plugin rebuild (`ryoku doctor`, Hub > Plugins) compiles against
 Hyprland's headers with the machine's default `c++`: g++ 14 on trixie, 15 on
