@@ -12,7 +12,7 @@ component.
 **Status marks:** ✅ decided (a **Decided** line follows the heading), ⬜ open.
 Inside a decided entry, ✅ marks the option taken and ❌ one rejected. Tier 1: 7
 of 7 decided (D-01a/b/c settled by D-01; D-02a added 2026-10-20). Tier 2: 6
-of 11. Tier 3: 0 of 27.
+of 11. Tier 3: 1 of 27.
 
 ---
 
@@ -378,7 +378,17 @@ Hyprland's headers with the machine's default `c++`: g++ 14 on trixie, 15 on
 resolute, 16 on forky/sid. Hyprland 0.56 headers are C++26. Decide which
 compiler a user machine carries. [11 cross-cutting]
 
-### ⬜ D-15 Offline/vendored builds
+### ✅ D-15 Offline/vendored builds
+
+**Decided 2026-10-20: (2), CI builds with network access.** Go and cargo lock
+files pin what the build fetches; Debian's no-network build rule is not a goal.
+Network is used at build time only. At install time nothing is downloaded:
+mandatory packages are already in the squashfs; optional ones (ryomotion,
+ryotunes, the Limine tools, and the like) sit as .debs in the ISO's local apt
+repo and are installed only on the user's say-so at install time. That
+install-time question is an installer requirement: see D-42 and 08.
+
+The question as raised:
 
 Fully vendored offline builds for Go, cargo, npm/Electron and Gradle/GraalVM
 (ryomotion, ryotunes, limine tools; large component tarballs plus refresh
@@ -541,8 +551,11 @@ the port's repo and delete the external channel code. [05 Q-4, 09b]
   - initramfs-tools: Debian default, crypttab-driven; UKIs need `ukify`.
   - dracut: a direct HOOKS mapping, `dracut --uefi`, and limine-entry-tool
     already has a dracut flavour.
-- ⬜ **D-42 Offline install:** keep a fully offline ISO (a baked package closure
-  per suite, plus NVIDIA stores), or ship online-only first.
+- ✅ **D-42 Offline install:** **Decided 2026-10-20 with D-15: fully offline
+  ISO.** Mandatory packages are in the squashfs; optional ones ship as .debs in
+  the ISO's local apt repo and are offered at install time; nothing is
+  downloaded during install. The options were a fully offline ISO (a baked
+  package closure per suite, plus NVIDIA stores), or online-only first.
 - ⬜ **D-43 No-ISO shell installer on Debian:**
   - Keep the existing `fromSource` Debian path. It compiles the desktop on the
     user's machine (against cardinal rule 7) and skips GPU drivers.
