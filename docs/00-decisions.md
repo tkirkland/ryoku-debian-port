@@ -171,17 +171,21 @@ Kepler has no driver on trixie, forky or resolute. [07 §NVIDIA, 08 Q4]
   by default on trixie.
 - **CachyOS:**
   - ❌ (a) Drop the CachyOS ISO variant and the Hub opt-in.
-  - ✅ (b) Opt-in only, as in `docs/kernels.md`: a Ryoku-built CachyOS kernel
+  - ❌ (b) Opt-in only, as in `docs/kernels.md`: a Ryoku-built CachyOS kernel
     deb (from the pre-patched tarball + BORE patch + config, `make bindeb-pkg`,
     clang ThinLTO).
-  - ❌ (c) Full variant: that kernel plus `cachyos-settings`, `ananicy-cpp` +
+  - ✅ (c) Full variant: that kernel plus `cachyos-settings`, `ananicy-cpp` +
     rules, `scx-scheds` and the `proton-cachyos` tarball, all self-built.
-  - ❌ (d) A variant on Debian's own 7.2 kernel (sched_ext present, no BORE)
-    plus self-built scx/ananicy/settings.
+  - (d) A variant on Debian's own 7.2 kernel (sched_ext present, no BORE) plus
+    self-built scx/ananicy/settings. Moot: a CachyOS kernel exists (below).
 
   A clang-built kernel needs DKMS modules (NVIDIA) built with `LLVM=1`; whether
   Debian's dkms does that automatically was not verified. A self-built kernel
   needs MOK signing under Secure Boot (D-04). [02 §CachyOS, 06 §Kernels, 07 Q4]
+
+**Decided 2026-10-20: CachyOS layer = (c), the full variant.** Picking the
+CachyOS kernel at install time brings `cachyos-settings`, `ananicy-cpp` + rules,
+`scx-scheds` and `proton-cachyos` with it, all port-built, as on Arch.
 
 **Decided 2026-10-19: kernel chosen at install time.**
 
