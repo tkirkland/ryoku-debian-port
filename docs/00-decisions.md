@@ -137,8 +137,8 @@ meaning of D-02's "both"; proven in [13](13-limine-secure-boot-zfs-test.md)).
   Requires D-02 (b).
 - ❌ (c) Limine + own keys: `sbctl` built from source, firmware Setup Mode per
   machine, and DKMS modules need a signing story.
-- ✅ (d) Limine behind shim + MOK: an unverified chain that needs hardware
-  testing.
+- ✅ (d) Limine behind shim + MOK: proven in a VM on 2026-10-19 (13); real
+  hardware not yet tested.
 
 On Debian/Ubuntu kernels, Secure Boot turns on lockdown. Lockdown refuses
 unsigned DKMS modules (NVIDIA) and disables hibernation (`resume=`). [06 §Secure
