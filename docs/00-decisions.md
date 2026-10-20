@@ -2,18 +2,22 @@
 
 Every point the deep dive could not settle from code, deduplicated across the
 ten sections. Each entry lists the options with their concrete consequences and
-the section that holds the detail. Nothing here is decided.
+the section that holds the detail.
 
 **Tier 1** decisions shape the whole plan and gate everything in
 [12-build-order.md](12-build-order.md). **Tier 2** decisions gate the
 infrastructure phase. **Tier 3** decisions can wait until work reaches that
 component.
 
+**Status marks:** ✅ decided (a **Decided** line follows the heading), ⬜ open.
+Tier 1: 6 of 6 decided (D-01a/b/c settled by D-01). Tier 2: 0 of 11. Tier 3: 0
+of 27.
+
 ---
 
 ## Tier 1: plan-shaping
 
-### D-01 Base suite
+### ✅ D-01 Base suite
 
 **Decided 2026-10-19: trixie, on the Debian13-Hyprland framework** (the build
 running on the reference machine). Goal: behaviour identical to Arch Ryoku, no
@@ -40,23 +44,23 @@ Ubuntu 26.04 (resolute). Facts: [01-base-comparison.md](01-base-comparison.md).
 
 Sub-decisions that exist only for some bases:
 
-- **D-01a (trixie) GCC 16 route for Hyprland ≥ 0.56:** (a) pin sid's `g++-16`
+- ✅ **D-01a (trixie) GCC 16 route for Hyprland ≥ 0.56:** (a) pin sid's `g++-16`
   into the build root; installed systems then run sid's `libc6`/`libstdc++6`.
   (b) Backport `gcc-16` to trixie: a clean graph, but a multi-hour toolchain
   build redone for each GCC point release. (c) Try gcc-14 with Debian's patch
   set first, falling back to (a) or (b). [11 §Hyprland]
-- **D-01b (trixie, resolute) Qt route:** (a) backport the Qt 6.11.2 source
+- ✅ **D-01b (trixie, resolute) Qt route:** (a) backport the Qt 6.11.2 source
   packages from forky, then rebuild every private-ABI consumer (quickshell,
   Hyprland plugins) on each Qt change. (b) Resolute only: stay on Qt 6.10 and
   accept that the default hero launcher falls back to okshell, or patch
   `hero/LauncherSurface.qml:466-469`. Either way it is not pixel-identical.
   [09a]
-- **D-01c (trixie, resolute) Hyprland stack source:** T1 rebuild Debian's forky
-  sources (Debian package names, `hyprland-abi-*` Provides, the least code to
-  own), or T2 a from-git builder (Arch-identical paths; owns every library,
+- ✅ **D-01c (trixie, resolute) Hyprland stack source:** T1 rebuild Debian's
+  forky sources (Debian package names, `hyprland-abi-*` Provides, the least code
+  to own), or T2 a from-git builder (Arch-identical paths; owns every library,
   wayland/xkbcommon/libinput included). [11]
 
-### D-02 Bootloader and rollback chain
+### ✅ D-02 Bootloader and rollback chain
 
 - **(a) Limine, as on Arch:** package `limine` (an easy build) plus
   `limine-entry-tool` and `limine-snapper-sync`. Both are GraalVM 25 + Gradle
@@ -82,7 +86,7 @@ or Limine, both behind shim + MOK. Cost: the boot guard, the restore guide and
 the boot doctor reconcilers exist once per bootloader, and the snapshot-entry
 tool writes both menu formats.
 
-### D-03 One codebase or a fork
+### ✅ D-03 One codebase or a fork
 
 - **(a) Fork:** replace pacman with apt in place. The smallest diff, but it
   diverges from upstream Ryoku on every file that touches packages.
@@ -96,7 +100,10 @@ changes are made in place. A scheduled workflow fetches upstream
 directly, while a conflict (or a clean merge that fails the checks) opens a PR
 instead.
 
-### D-04 Secure Boot target
+### ✅ D-04 Secure Boot target
+
+**Decided 2026-10-19 with D-01: (b) Debian shim + signed GRUB + MOK, extended to
+Limine by D-02 (= (d), proven in [13](13-limine-secure-boot-zfs-test.md)).**
 
 - (a) None: refuse Secure Boot, as Ryoku does today.
 - (b) Debian shim + signed GRUB + MOK: works on Microsoft-keyed firmware.
@@ -109,7 +116,10 @@ On Debian/Ubuntu kernels, Secure Boot turns on lockdown. Lockdown refuses
 unsigned DKMS modules (NVIDIA) and disables hibernation (`resume=`). [06 §Secure
 Boot, 08 Q5]
 
-### D-05 NVIDIA driver source
+### ✅ D-05 NVIDIA driver source
+
+**Decided 2026-10-19 with D-01: (b) the NVIDIA CUDA repo, as Debian13-Hyprland
+does.**
 
 - **(a) Debian archive 550.163:** signed by Debian and security-supported. No
   RTX 50, no explicit sync, and the open module is missing in forky. Modules are
@@ -127,7 +137,7 @@ Boot, 08 Q5]
 
 Kepler has no driver on trixie, forky or resolute. [07 §NVIDIA, 08 Q4]
 
-### D-06 Kernel and the CachyOS layer
+### ✅ D-06 Kernel and the CachyOS layer
 
 - **Kernel per base:** stock (trixie 6.12 lacks sched_ext/ntsync/asus-armoury;
   trixie-bpo/forky 7.2 and Ubuntu 7.0 have them), or the trixie-backports kernel
@@ -171,7 +181,7 @@ build; and a clang-built CachyOS kernel needs NVIDIA's DKMS modules built with
 
 ## Tier 2: infrastructure
 
-### D-07 Source-package shape
+### ⬜ D-07 Source-package shape
 
 - **A:** one `3.0 (native)` source for the monorepo. Exact pins via
   `${binary:Version}`; one source of about 300 MB per build (239 MB of it
@@ -180,14 +190,14 @@ build; and a clang-built CachyOS kernel needs NVIDIA's DKMS modules built with
   per source, pins go through a substvar, and all sources must publish together.
   [04 §1.2]
 
-### D-08 Repo tool
+### ⬜ D-08 Repo tool
 
 apt-ftparchive (stateless, closest to `build-repo.sh`, no by-hash), reprepro
 (persistent db, one version per suite), or aptly (persistent db, native
 snapshots, `publish switch` for the stable pointer, S3 publish, by-hash). [04
 Q2]
 
-### D-09 Hosting
+### ⬜ D-09 Hosting
 
 - S3-compatible bucket (today's R2 model).
 - GitHub Pages (1 GB site, 100 MB per file).
@@ -196,7 +206,7 @@ Q2]
 
 [04 Q3]
 
-### D-10 Channel layout and downgrades
+### ⬜ D-10 Channel layout and downgrades
 
 - **Layout:**
   - D1: per-channel repo roots (the CLI switches `URIs:`).
@@ -215,13 +225,13 @@ Q2]
 
 [04 Q4, 05 Q-3]
 
-### D-11 Signing key
+### ⬜ D-11 Signing key
 
 Who holds it (a GitHub secret only, or an offline primary + CI subkey), the
 algorithm (ed25519 works with trixie's `sqv`), the expiry, and whether `.deb`
 files also carry `debsigs` signatures (apt ignores them). [04 Q5]
 
-### D-12 Debian's packages vs own builds where both exist
+### ⬜ D-12 Debian's packages vs own builds where both exist
 
 ble.sh, dualsensectl, xpadneo-dkms, bibata-cursor-theme, quickshell, uv,
 gpu-screen-recorder, hyprbars/hyprfocus, the Hyprland stack:
@@ -233,7 +243,7 @@ gpu-screen-recorder, hyprbars/hyprfocus, the Hyprland stack:
 
 [04 Q6, 11 §plugins]
 
-### D-13 Hyprland plugin dependency strength
+### ⬜ D-13 Hyprland plugin dependency strength
 
 - (a) Keep the hard `=` pins from `ryoku-desktop-hyprland` to all five plugins.
   Every Debian Hyprland upload or binNMU then blocks or removes the desktop
@@ -243,21 +253,21 @@ gpu-screen-recorder, hyprbars/hyprfocus, the Hyprland stack:
 
 [11 §plugins]
 
-### D-14 Compiler on user machines
+### ⬜ D-14 Compiler on user machines
 
 The runtime plugin rebuild (`ryoku doctor`, Hub > Plugins) compiles against
 Hyprland's headers with the machine's default `c++`: g++ 14 on trixie, 15 on
 resolute, 16 on forky/sid. Hyprland 0.56 headers are C++26. Decide which
 compiler a user machine carries. [11 cross-cutting]
 
-### D-15 Offline/vendored builds
+### ⬜ D-15 Offline/vendored builds
 
 Fully vendored offline builds for Go, cargo, npm/Electron and Gradle/GraalVM
 (ryomotion, ryotunes, limine tools; large component tarballs plus refresh
 tooling), or CI builds with network access (simpler, but not reproducible in
 sbuild). [04 Q9]
 
-### D-16 `/etc` files shipped by packages
+### ⬜ D-16 `/etc` files shipped by packages
 
 `/etc/ryoku-release`, the logind lid drop-in, two modules-load files:
 
@@ -268,7 +278,7 @@ sbuild). [04 Q9]
 
 [04 Q11]
 
-### D-17 ryotunes
+### ⬜ D-17 ryotunes
 
 (a) Ask upstream `ryoku-dev/ryotunes` to publish a `.deb` (Tauri can bundle one)
 and keep the separate channel with `apt install ./file.deb`, or (b) build it in
@@ -280,7 +290,7 @@ the port's repo and delete the external channel code. [05 Q-4, 09b]
 
 ### Update system ([05](05-update-delivery.md))
 
-- **D-18 Snapshot pair per update:**
+- ⬜ **D-18 Snapshot pair per update:**
   - A: edit `/etc/default/snapper`.
   - B: divert `80snapper`.
   - C: use 80snapper's pair only.
@@ -289,21 +299,22 @@ the port's repo and delete the external channel code. [05 Q-4, 09b]
   Debian's `DISABLE_APT_SNAPSHOT` is read from `/etc/default/snapper`, not from
   the environment, so it can't replace `SNAP_PAC_SKIP` as-is.
 
-- **D-19 `snapper-boot.timer`:** Debian enables it, giving one snapshot per boot
-  that counts against `NUMBER_LIMIT="10"`. Disable it in
+- ⬜ **D-19 `snapper-boot.timer`:** Debian enables it, giving one snapshot per
+  boot that counts against `NUMBER_LIMIT="10"`. Disable it in
   `reconcileSnapperCleanup`, or keep it.
-- **D-20 Held packages:** pass `--allow-change-held-packages` in the Ryoku lane
-  (matches pacman's explicit targets), or skip held packages and report them.
-- **D-21 Cadence of formerly-AUR apps** (zen, localsend, voxtype, cursors): in
-  the frozen release (they update only on a tag), or in a separate rolling suite
-  (another channel dimension).
-- **D-22 Status freshness:** a private apt tree refreshed by `ryoku status` (no
-  root, network on each poll, bounded at 120 s), or
+- ⬜ **D-20 Held packages:** pass `--allow-change-held-packages` in the Ryoku
+  lane (matches pacman's explicit targets), or skip held packages and report
+  them.
+- ⬜ **D-21 Cadence of formerly-AUR apps** (zen, localsend, voxtype, cursors):
+  in the frozen release (they update only on a tag), or in a separate rolling
+  suite (another channel dimension).
+- ⬜ **D-22 Status freshness:** a private apt tree refreshed by `ryoku status`
+  (no root, network on each poll, bounded at 120 s), or
   `APT::Periodic::Update-Package-Lists "1"` (root, twice a day).
 
 ### System and hardware ([07](07-hardware-system.md), [08](08-installer.md))
 
-- **D-23 Admin group:**
+- ⬜ **D-23 Admin group:**
   - (a) Rewrite all 11 polkit rules from `isInGroup("wheel")` to `"sudo"` and
     create the user in `sudo`. This is native: Debian's polkit is built with
     `-Dprivileged_group=sudo`.
@@ -313,23 +324,23 @@ the port's repo and delete the external channel code. [05 Q-4, 09b]
 
   Today the install aborts at `useradd -G wheel` (`chroot.sh:117`).
 
-- **D-24 Docker:** `docker.io` (Debian; 26.1.5 on trixie; starts on install, so
-  it needs an explicit disable) or `docker-ce` (Docker Inc. 29.9.1, matching
+- ⬜ **D-24 Docker:** `docker.io` (Debian; 26.1.5 on trixie; starts on install,
+  so it needs an explicit disable) or `docker-ce` (Docker Inc. 29.9.1, matching
   Arch; no forky suite).
-- **D-25 Recommends policy:** apt installs Recommends by default and pacman has
-  none. Either `--no-install-recommends` plus a keep-list, or install
+- ⬜ **D-25 Recommends policy:** apt installs Recommends by default and pacman
+  has none. Either `--no-install-recommends` plus a keep-list, or install
   Recommends.
-- **D-26 AAC Bluetooth codec:** (a) none (Debian/Ubuntu ship no fdk-aac), or (b)
-  a rebuilt `pipewire` with fdk-aac in the Ryoku repo, which forks a core audio
-  package that then tracks every pipewire update.
-- **D-27 gpu-screen-recorder capability:** (a) `setcap cap_sys_admin` on
+- ⬜ **D-26 AAC Bluetooth codec:** (a) none (Debian/Ubuntu ship no fdk-aac), or
+  (b) a rebuilt `pipewire` with fdk-aac in the Ryoku repo, which forks a core
+  audio package that then tracks every pipewire update.
+- ⬜ **D-27 gpu-screen-recorder capability:** (a) `setcap cap_sys_admin` on
   `gsr-kms-server` in postinst, as Arch does, or (b) Debian's default, which
   means a pkexec prompt per recording or switching `RYOKU_SCREENRECORD_BACKEND`
   to `portal`.
 
 ### Store and apps ([07](07-hardware-system.md), [11](11-compositors-apps-theming.md))
 
-- **D-28 AUR-routed catalogue items** (37 items, plus zen-browser, qmk-hid,
+- ⬜ **D-28 AUR-routed catalogue items** (37 items, plus zen-browser, qmk-hid,
   Looking Glass/kvmfr, nvibrant, davinci-resolve):
   - Flatpak.
   - Vendor apt repos (each one adds a signing key).
@@ -339,72 +350,72 @@ the port's repo and delete the external channel code. [05 Q-4, 09b]
   The choice also decides whether `bundle.json` gains per-distro fields upstream
   or the actuator carries a Debian route table.
 
-- **D-29 Bundle catalogue on Debian:**
+- ⬜ **D-29 Bundle catalogue on Debian:**
   - (a) Hide the Bundles tab.
   - (b) Map names locally and drop items with no Debian equivalent.
   - (c) Publish a Debian-specific registry in your fork of ryostore.
 
 ### Desktop and login ([10](10-hub-ui-lockscreen.md), [11](11-compositors-apps-theming.md), [09a](09a-shell-qml.md), [09b](09b-shell-native.md))
 
-- **D-30 Xorg on the login path:**
+- ⬜ **D-30 Xorg on the login path:**
   - (a) Let sddm pull `xserver-xorg` (20+ unused packages).
   - (b) Satisfy `xserver` with `xvfb`/`xserver-xephyr`.
   - (c) Rebuild sddm without the X dependency.
 
   Not needed on resolute.
 
-- **D-31 Fingerprint at sudo/SDDM/polkit:**
+- ⬜ **D-31 Fingerprint at sudo/SDDM/polkit:**
   - (a) Build `pam-fprint-grosshack` v0.3.0 as a deb (Arch behaviour).
   - (b) Use stock `pam_fprintd` through `pam-auth-update`, and rewrite the Hub
     toggles. The password prompt then waits for the scan to time out.
-- **D-32 Fonts:**
+- ⬜ **D-32 Fonts:**
   - SpaceMono Nerd Font is the documented mono font (`docs/ui-ux.md:216`,
     `Tokens.qml:107`), but no Ryoku package installs it, even on Arch. Ship it
     (the font the code asks for), or don't (matches what Arch machines actually
     render).
   - Fraunces: hard-installed, or optional as on Arch.
-- **D-33 Hermes (Rashin):** keep the upstream per-user installer (its own
+- ⬜ **D-33 Hermes (Rashin):** keep the upstream per-user installer (its own
   uv/Python/Node in `~/.hermes`), or package it as a deb (a large Python tree
   that tracks frequent upstream releases).
-- **D-34 Ryoku.Blobs Qt ABI pin:** shlibs only (Blobs uses only public Qt API),
-  or an explicit `qt6-declarative-private-abi (= X)` that copies Arch's "rebuild
-  on every Qt update" rule.
-- **D-35 niri build base (trixie only):**
+- ⬜ **D-34 Ryoku.Blobs Qt ABI pin:** shlibs only (Blobs uses only public Qt
+  API), or an explicit `qt6-declarative-private-abi (= X)` that copies Arch's
+  "rebuild on every Qt update" rule.
+- ⬜ **D-35 niri build base (trixie only):**
   - (a) trixie rustc 1.85.1: a zero-margin MSRV and libinput 1.28.
   - (b) Backports rustc 1.96 in the build chroot.
-- **D-36 Browsers:**
+- ⬜ **D-36 Browsers:**
   - Debian: `firefox-esr` (140) or Mozilla's APT repo (current Firefox).
   - Resolute: Chromium is snap-only. Use the snap (flags and native-messaging
     paths live inside confinement), a third-party deb, or a different default
     browser.
-- **D-37 Small parity calls:**
+- ⬜ **D-37 Small parity calls:**
   - `ryoku-livewall`: an unused duplicate binary; ship it or drop it.
   - The "foreign/AUR" package count on the Profile plate: show manually
     installed `.deb`s, or relabel it.
 
 ### Installer and ISO ([06](06-iso-boot.md), [08](08-installer.md))
 
-- **D-38 ESP layout:**
+- ⬜ **D-38 ESP layout:**
   - (A) Keep `/boot` as the FAT ESP. Arch parity and no Ryoku path changes, but
     dpkg writes kernels onto FAT (chmod/chown EPERM risk).
   - (B) ESP at `/efi`, `/boot` on btrfs `@`. Debian-native, and kernels are
     inside snapshots. Changes about 40 hardcoded `/boot/...` paths.
-- **D-39 Kernel entry naming:**
+- ⬜ **D-39 Kernel entry naming:**
   - (a) One entry per Debian kernel version; `default_entry` is repointed on
     each kernel install.
   - (b) Stable `linux` + `linux-previous` entries, which keeps Ryoku's
     `linux`/`linux-cachyos` logic.
-- **D-40 ISO toolchain:**
+- ⬜ **D-40 ISO toolchain:**
   - (a) live-build: declarative, but Debian-only and GRUB-only for EFI.
   - (b) An mmdebstrap + squashfs + xorriso script: Debian and Ubuntu, any EFI
     loader.
-- **D-41 Initramfs generator:**
+- ⬜ **D-41 Initramfs generator:**
   - initramfs-tools: Debian default, crypttab-driven; UKIs need `ukify`.
   - dracut: a direct HOOKS mapping, `dracut --uefi`, and limine-entry-tool
     already has a dracut flavour.
-- **D-42 Offline install:** keep a fully offline ISO (a baked package closure
+- ⬜ **D-42 Offline install:** keep a fully offline ISO (a baked package closure
   per suite, plus NVIDIA stores), or ship online-only first.
-- **D-43 No-ISO shell installer on Debian:**
+- ⬜ **D-43 No-ISO shell installer on Debian:**
   - Keep the existing `fromSource` Debian path. It compiles the desktop on the
     user's machine (against cardinal rule 7) and skips GPU drivers.
   - Switch it to the port's apt repo.
@@ -412,7 +423,7 @@ the port's repo and delete the external channel code. [05 Q-4, 09b]
 
 ### Ryoku's own bugs found during the dive (carry over unless fixed)
 
-- **D-44** decide per item whether the port fixes it:
+- ⬜ **D-44** decide per item whether the port fixes it:
   - `system/hardware/network/50-ryoku-dns.rules:10` grants password-free root to
     any program whose path ends in `ryoku-dns`, a user-writable copy included.
   - `54-ryoku-bluetooth-a2dp.rules` lacks `active`/`local` checks.
