@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/stay-in-project.sh\"",
+            "timeout": 10,
+            "onFailure": "block",
+            "statusMessage": "stay-in-project guard"
+          }
+        ]
+      }
+    ]
+  }
+}
