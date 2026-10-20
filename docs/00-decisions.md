@@ -11,7 +11,7 @@ component.
 
 **Status marks:** ✅ decided (a **Decided** line follows the heading), ⬜ open.
 Inside a decided entry, ✅ marks the option taken and ❌ one rejected. Tier 1: 7
-of 7 decided (D-01a/b/c settled by D-01; D-02a added 2026-10-20). Tier 2: 6
+of 7 decided (D-01a/b/c settled by D-01; D-02a added 2026-10-20). Tier 2: 11
 of 11. Tier 3: 1 of 27.
 
 ---
@@ -416,11 +416,16 @@ don't fix it"). The files: `/etc/ryoku-release`,
 
 [04 Q11]
 
-### ⬜ D-17 ryotunes
+### ✅ D-17 ryotunes
 
-(a) Ask upstream `ryoku-dev/ryotunes` to publish a `.deb` (Tauri can bundle one)
-and keep the separate channel with `apt install ./file.deb`, or (b) build it in
-the port's repo and delete the external channel code. [05 Q-4, 09b]
+**Decided 2026-10-20: (b).** Upstream publishes the source, so the port builds a
+.deb from it and ships it in the ISO's local apt repo.
+
+- ❌ (a) Ask upstream `ryoku-dev/ryotunes` to publish a `.deb` (Tauri can bundle
+  one) and keep the separate channel with `apt install ./file.deb`.
+- ✅ (b) Build it in the port's repo and delete the external channel code.
+
+[05 Q-4, 09b]
 
 ---
 
