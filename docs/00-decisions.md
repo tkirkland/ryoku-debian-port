@@ -263,10 +263,10 @@ Q2]
 ### ✅ D-09 Hosting
 
 - ❌ S3-compatible bucket (today's R2 model).
-- ✅ Own server. The user's VPS (2026-10-20), which already runs their self-hosted
-  GitLab. A plain directory: rsync the apt-ftparchive output, nginx serves it.
-  No size caps, kernels and packages could share one repository. Uptime,
-  patching, backups and TLS are ours.
+- ✅ Own server. The user's VPS (2026-10-20), which already runs their
+  self-hosted GitLab. A plain directory: rsync the apt-ftparchive output, nginx
+  serves it. No size caps, kernels and packages could share one repository.
+  Uptime, patching, backups and TLS are ours.
 
 **Decided 2026-10-20: the user's VPS**, a plain directory behind nginx holding
 the apt-ftparchive output (D-08). Kernels stay on GitHub Releases until there is
@@ -340,12 +340,19 @@ gpu-screen-recorder, hyprbars/hyprfocus, the Hyprland stack:
 
 [04 Q6, 11 §plugins]
 
-### ⬜ D-13 Hyprland plugin dependency strength
+### ✅ D-13 Hyprland plugin dependency strength
 
-- (a) Keep the hard `=` pins from `ryoku-desktop-hyprland` to all five plugins.
-  Every Debian Hyprland upload or binNMU then blocks or removes the desktop
-  until `[ryoku]` republishes the plugins.
-- (b) Make them Recommends. Upgrades never block; a stale plugin shows "Needs
+**Decided 2026-10-20: (a), hard pins.** Hyprland, the desktop package and the
+five plugins are one matched set, built together from the monorepo and published
+together. A new upstream Hyprland arrives as a pull request with the plugins
+rebuilt against it; the user reviews, merges, and the publish job ships the set
+(user: "hard coding the desktop and the plugins to whatever is installed at
+release time"). No local plugin rebuilds on user machines.
+
+- ✅ (a) Keep the hard `=` pins from `ryoku-desktop-hyprland` to all five
+  plugins. Every Debian Hyprland upload or binNMU then blocks or removes the
+  desktop until `[ryoku]` republishes the plugins.
+- ❌ (b) Make them Recommends. Upgrades never block; a stale plugin shows "Needs
   rebuild" in the Hub and the doctor rebuilds it locally, as on Arch.
 
 [11 §plugins]
