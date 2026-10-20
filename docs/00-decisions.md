@@ -10,8 +10,9 @@ infrastructure phase. **Tier 3** decisions can wait until work reaches that
 component.
 
 **Status marks:** ✅ decided (a **Decided** line follows the heading), ⬜ open.
-Inside a decided entry, ✅ marks the option taken and ❌ one rejected. Tier 1: 6
-of 6 decided (D-01a/b/c settled by D-01). Tier 2: 6 of 11. Tier 3: 0 of 27.
+Inside a decided entry, ✅ marks the option taken and ❌ one rejected. Tier 1: 7
+of 7 decided (D-01a/b/c settled by D-01; D-45 added 2026-10-20). Tier 2: 6
+of 11. Tier 3: 0 of 27.
 
 ---
 
