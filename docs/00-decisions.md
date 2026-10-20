@@ -11,7 +11,7 @@ component.
 
 **Status marks:** ✅ decided (a **Decided** line follows the heading), ⬜ open.
 Inside a decided entry, ✅ marks the option taken and ❌ one rejected. Tier 1: 6
-of 6 decided (D-01a/b/c settled by D-01). Tier 2: 4 of 11. Tier 3: 0 of 27.
+of 6 decided (D-01a/b/c settled by D-01). Tier 2: 5 of 11. Tier 3: 0 of 27.
 
 ---
 
@@ -292,7 +292,17 @@ Options were:
 
 [04 Q4, 05 Q-3]
 
-### ⬜ D-11 Signing key
+### ✅ D-11 Signing key
+
+**Decided 2026-10-20: offline primary + signing subkey.** The primary (ed25519,
+no expiry) is the trust anchor shipped in the keyring package; it lives on a
+thumb drive held by the user plus an encrypted off-site copy, with a
+pre-generated revocation certificate beside it. A signing subkey (two-year
+expiry) is held by GitLab (D-08) and signs every published index; a leaked
+subkey is revoked and reissued without replacing the trust anchor on installed
+machines. No debsigs on the .deb files; apt ignores them.
+
+The open points were:
 
 Who holds it (a GitHub secret only, or an offline primary + CI subkey), the
 algorithm (ed25519 works with trixie's `sqv`), the expiry, and whether `.deb`
