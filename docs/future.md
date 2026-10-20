@@ -30,3 +30,20 @@ unloadable compositor.
 **Depends on:** D-07 (decided: one native monorepo source, 2026-10-20), the
 stack build job existing in CI, and a pinned version table the checker can
 rewrite.
+
+## hyprdim as an optional extra
+
+**What:** the user's own hyprdim daemon (D-Bus `dev.hyprdim`, packaged as a deb
+in the Debian13-Hyprland stack) offered as an opt-in extra, not baked into the
+image and not part of ryoku-desktop's dependencies.
+
+**Why not now:** Ryoku already dims on idle: `ryoku-idle` renders the hypridle
+config with `brightnessctl -s set 20%` / `brightnessctl -r` as the dim step.
+hyprdim next to that listener would double-dim and race on restore. It only fits
+if it replaces that step, which is a change to `ryoku-idle`'s template and a
+behaviour the user wants to keep as Ryoku does it.
+
+**Re-evaluate when:** the port's first release is out and ryoku-idle's hypridle
+template is final. Then check: does hyprdim coexist with the listener disabled,
+does it honour power.json's timings, and does it need the Hyprland plugin ABI at
+all (it is a daemon, so probably not).
