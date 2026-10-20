@@ -11,7 +11,7 @@ component.
 
 **Status marks:** ✅ decided (a **Decided** line follows the heading), ⬜ open.
 Inside a decided entry, ✅ marks the option taken and ❌ one rejected. Tier 1: 6
-of 6 decided (D-01a/b/c settled by D-01). Tier 2: 5 of 11. Tier 3: 0 of 27.
+of 6 decided (D-01a/b/c settled by D-01). Tier 2: 6 of 11. Tier 3: 0 of 27.
 
 ---
 
@@ -308,7 +308,17 @@ Who holds it (a GitHub secret only, or an offline primary + CI subkey), the
 algorithm (ed25519 works with trixie's `sqv`), the expiry, and whether `.deb`
 files also carry `debsigs` signatures (apt ignores them). [04 Q5]
 
-### ⬜ D-12 Debian's packages vs own builds where both exist
+### ✅ D-12 Debian's packages vs own builds where both exist
+
+**Decided 2026-10-20: Debian's package whenever one exists at a version Ryoku
+works with.** Own builds only where Debian lacks the package, ships one too old
+for a floor Ryoku needs, or Ryoku patches it (user: "why would I provide
+something that is byte for byte the same?"). Today that puts the Hyprland stack,
+its plugins and quickshell in the own-build column and ble.sh, dualsensectl,
+xpadneo-dkms, uv, bibata-cursor-theme and gpu-screen-recorder in Debian's. The
+plugin-directory concern is moot since the plugins are own builds.
+
+The list and the two poles were:
 
 ble.sh, dualsensectl, xpadneo-dkms, bibata-cursor-theme, quickshell, uv,
 gpu-screen-recorder, hyprbars/hyprfocus, the Hyprland stack:
