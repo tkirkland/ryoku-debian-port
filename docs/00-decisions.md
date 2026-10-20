@@ -416,16 +416,7 @@ don't fix it"). The files: `/etc/ryoku-release`,
 
 [04 Q11]
 
-### ✅ D-17 ryotunes
-
-**Decided 2026-10-20: (b), built in the port's repo**, the separate GitHub
-release channel and its code (`internal/ryotunesrelease`, `upgradeRyotunes`,
-`reconcile_ryotunes`) leave the fork. ryotunes is optional on Arch (the
-now-playing widget follows it when present), so under D-15 it ships as a .deb in
-the ISO's local apt repo and is offered at install time, not baked into the
-squashfs.
-
-The options were:
+### ⬜ D-17 ryotunes
 
 (a) Ask upstream `ryoku-dev/ryotunes` to publish a `.deb` (Tauri can bundle one)
 and keep the separate channel with `apt install ./file.deb`, or (b) build it in
