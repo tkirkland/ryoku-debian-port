@@ -11,7 +11,7 @@ component.
 
 **Status marks:** ✅ decided (a **Decided** line follows the heading), ⬜ open.
 Inside a decided entry, ✅ marks the option taken and ❌ one rejected. Tier 1: 6
-of 6 decided (D-01a/b/c settled by D-01). Tier 2: 1 of 11. Tier 3: 0 of 27.
+of 6 decided (D-01a/b/c settled by D-01). Tier 2: 3 of 11. Tier 3: 0 of 27.
 
 ---
 
@@ -229,14 +229,21 @@ of this phase.
   duplicated per source, pins go through a substvar, and all sources must
   publish together. [04 §1.2]
 
-### ⬜ D-08 Repo tool
+### ✅ D-08 Repo tool
 
-apt-ftparchive (stateless, closest to `build-repo.sh`, no by-hash), reprepro
-(persistent db, one version per suite), or aptly (persistent db, native
+**Decided 2026-10-20: the Debian package registry of the user's self-hosted
+GitLab** (same VPS as D-09). Condition: before the first publish, verify the
+registry is enabled and stable on that GitLab version; it sat behind a feature
+flag for a long time. Fallback if it is not: apt-ftparchive into a plain
+directory on the same VPS, which is stateless and loses nothing when swapped out
+later.
+
+Options were apt-ftparchive (stateless, closest to `build-repo.sh`, no by-hash),
+reprepro (persistent db, one version per suite), or aptly (persistent db, native
 snapshots, `publish switch` for the stable pointer, S3 publish, by-hash). [04
 Q2]
 
-### ⬜ D-09 Hosting
+### ✅ D-09 Hosting
 
 - S3-compatible bucket (today's R2 model).
 - GitHub Pages (1 GB site, 100 MB per file).
@@ -251,7 +258,9 @@ Q2]
     enabled and stable on that GitLab version; it sat behind a feature flag for
     a long time. Either way uptime, patching, backups and TLS are ours.
 
-Deferred: decide at first publish. Nothing in the build phase depends on it.
+**Decided 2026-10-20: the user's VPS.** GitLab's Debian package registry on it
+(D-08), else a plain directory behind nginx on the same box. Kernels stay on
+GitHub Releases until there is a reason to move them.
 
 [04 Q3]
 
