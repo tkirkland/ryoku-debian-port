@@ -128,16 +128,17 @@ instead.
 
 ### ✅ D-04 Secure Boot target
 
-**Decided 2026-10-19 with D-01: (b) Debian shim + signed GRUB + MOK, extended to
-Limine by D-02 (= (d), proven in [13](13-limine-secure-boot-zfs-test.md)).**
+**Decided: (b) and (d), shim + MOK under either bootloader.** (b) for GRUB
+(2026-10-19 with D-01), (d) for Limine (confirmed by the user 2026-10-20 as the
+meaning of D-02's "both"; proven in [13](13-limine-secure-boot-zfs-test.md)).**
 
 - ❌ (a) None: refuse Secure Boot, as Ryoku does today.
 - ✅ (b) Debian shim + signed GRUB + MOK: works on Microsoft-keyed firmware.
   Requires D-02 (b).
 - ❌ (c) Limine + own keys: `sbctl` built from source, firmware Setup Mode per
   machine, and DKMS modules need a signing story.
-- ✅ (d) Limine behind shim + MOK (Claude, not decided: marked from D-02's
-  decision and the test in 13): an unverified chain that needs hardware testing.
+- ✅ (d) Limine behind shim + MOK: an unverified chain that needs hardware
+  testing.
 
 On Debian/Ubuntu kernels, Secure Boot turns on lockdown. Lockdown refuses
 unsigned DKMS modules (NVIDIA) and disables hibernation (`resume=`). [06 §Secure
@@ -236,8 +237,7 @@ of this phase.
 apt-ftparchive over the output, signs the index, uploads to the host (D-09).
 GitLab's Debian package registry was considered and ruled out on 2026-10-20:
 GitLab's own docs list it as an Experiment, off by default, "not ready for
-production use", with known security vulnerabilities. Watch item in
-[future.md](future.md).
+production use", with known security vulnerabilities.
 
 Options were apt-ftparchive (stateless, closest to `build-repo.sh`, no by-hash),
 reprepro (persistent db, one version per suite), or aptly (persistent db, native
@@ -251,12 +251,9 @@ Q2]
 - GitHub Releases flat repos (natural per-tag freezing, flat layout only).
   Already used by the two kernel repos.
 - Own server. The user's VPS (2026-10-20), which already runs their self-hosted
-  GitLab. Two ways to use the same box:
-  - A plain directory: rsync the apt-ftparchive output, nginx serves it. No size
-    caps, kernels and packages could share one repository.
-  - GitLab's built-in Debian package registry: ruled out for now, see D-08.
-
-  Either way uptime, patching, backups and TLS are ours.
+  GitLab. A plain directory: rsync the apt-ftparchive output, nginx serves it.
+  No size caps, kernels and packages could share one repository. Uptime,
+  patching, backups and TLS are ours.
 
 **Decided 2026-10-20: the user's VPS**, a plain directory behind nginx holding
 the apt-ftparchive output (D-08). Kernels stay on GitHub Releases until there is

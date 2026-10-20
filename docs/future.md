@@ -30,19 +30,3 @@ unloadable compositor.
 **Depends on:** D-07 (decided: one native monorepo source, 2026-10-20), the
 stack build job existing in CI, and a pinned version table the checker can
 rewrite.
-
-## Ruled out: GitLab's Debian package registry as the apt repository
-
-**Status:** ruled out 2026-10-20, do not propose it again until the re-evaluate
-condition below is met.
-
-**What it would be:** the user's self-hosted GitLab (same VPS as the apt
-repository) has a built-in Debian package registry that would generate and sign
-the index files itself, replacing apt-ftparchive and the rsync step.
-
-**Why it was ruled out:** GitLab's own docs list it as an Experiment, behind a
-feature flag that is off by default, "not ready for production use", with known
-security vulnerabilities. The GA epic (gitlab-org work item 6057) is open.
-
-**Re-evaluate when:** GitLab marks it generally available. Switching cost is low
-because apt-ftparchive keeps no state.
