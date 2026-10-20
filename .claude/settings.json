@@ -13,6 +13,19 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r 'if (.tool_input.command // \"\" | test(\"\\\\bgit\\\\b.*\\\\bcommit\\\\b\")) then {hookSpecificOutput:{hookEventName:\"PostToolUse\",additionalContext:\"A commit was just made. Ask the user now whether to push it; unpushed commits have desynced their Windows and Linux clones before.\"}} else empty end | select(. != null)'",
+            "timeout": 5,
+            "statusMessage": "commit → ask about push"
+          }
+        ]
+      }
     ]
   }
 }
