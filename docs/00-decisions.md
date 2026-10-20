@@ -211,8 +211,8 @@ build; and a clang-built CachyOS kernel needs NVIDIA's DKMS modules built with
 ### ✅ D-07 Source-package shape
 
 **Decided 2026-10-20: A, one native source for the monorepo.** Automated
-upstream-version PRs for the stack are noted in [future.md](future.md), not
-part of this phase.
+upstream-version PRs for the stack are noted in [future.md](future.md), not part
+of this phase.
 
 - ✅ **A:** one `3.0 (native)` source for the monorepo. Exact pins via
   `${binary:Version}`; one source of about 300 MB per build (239 MB of it
@@ -233,7 +233,14 @@ Q2]
 - S3-compatible bucket (today's R2 model).
 - GitHub Pages (1 GB site, 100 MB per file).
 - GitHub Releases flat repos (natural per-tag freezing, flat layout only).
-- Own server.
+  Already used by the two kernel repos.
+- Own server. The user has a VPS available (2026-10-20): rsync the
+  apt-ftparchive output, nginx serves it, no size caps, kernels and packages
+  could share one repository. Uptime, patching, backups and TLS are ours.
+- Far future: the user's self-hosted GitLab has a built-in Debian package
+  registry, which would replace both the repo tool and the hosting.
+
+Deferred: decide at first publish. Nothing in the build phase depends on it.
 
 [04 Q3]
 
