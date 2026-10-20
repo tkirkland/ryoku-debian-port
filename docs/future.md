@@ -44,6 +44,10 @@ if it replaces that step, which is a change to `ryoku-idle`'s template and a
 behaviour the user wants to keep as Ryoku does it.
 
 **Re-evaluate when:** the port's first release is out and ryoku-idle's hypridle
-template is final. Then check: does hyprdim coexist with the listener disabled,
-does it honour power.json's timings, and does it need the Hyprland plugin ABI at
-all (it is a daemon, so probably not).
+template is final. Then check whether hyprdim should replace the backlight dim
+rather than sit beside it: hyprdim dims with a grey overlay, so it covers every
+output the compositor draws, including external monitors with no DDC (the user's
+has hardware brightness buttons but no DDC, so brightnessctl and ddcutil cannot
+reach it and Ryoku's dim does nothing there). Also check it honours power.json's
+timings. It is a daemon, not a compositor plugin, so the plugin ABI should not
+apply.
